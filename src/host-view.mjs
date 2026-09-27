@@ -101,6 +101,7 @@ export function inspectHost(window) {
     user,
     nickname: header.textContent.trim(),
     originalSub,
+    bodyEvidence: columns.querySelector(evidence[shape]),
   };
 }
 

@@ -105,6 +105,7 @@
       user,
       nickname: header.textContent.trim(),
       originalSub,
+      bodyEvidence: columns.querySelector(evidence[shape]),
     };
   }
 
@@ -633,20 +634,28 @@
   }
   function renderPostsNav(tabs, category) {
     const d = tabs.ownerDocument;
-    tabs.replaceChildren();
-    const nav = el(d, "ul", "navSubTabs");
+    let nav = tabs.querySelector(":scope > ul.navSubTabs");
+    if (!nav) {
+      nav = el(d, "ul", "navSubTabs");
+      tabs.replaceChildren(nav);
+    }
     for (const [filter, label, hash] of [
       ["all", "全部帖子", "#posts"],
       ["group", "小组话题", "#posts/group"],
       ["subject", "条目讨论", "#posts/subject"],
     ]) {
-      const li = el(d, "li");
-      const a = el(d, "a", filter === category ? "focus" : "", label);
-      a.href = hash;
-      li.append(a);
-      nav.append(li);
+      let li = nav.querySelector(
+        `:scope > li > a[href="${hash}"]`,
+      )?.parentElement;
+      if (!li) {
+        li = el(d, "li");
+        const a = el(d, "a", "", label);
+        a.href = hash;
+        li.append(a);
+        nav.append(li);
+      }
+      li.firstElementChild.classList.toggle("focus", filter === category);
     }
-    tabs.append(nav);
   }
   function renderPosts(
     root,
@@ -797,6 +806,12 @@
     const mounted = () =>
       host.columns.isConnected &&
       host.footer.parentElement === host.columns.parentElement &&
+      host.bodyEvidence.isConnected &&
+      host.columns.contains(host.bodyEvidence) &&
+      (!host.originalSub ||
+        (host.originalSub.isConnected &&
+          host.originalSub.parentElement ===
+            host.nav.parentElement.parentElement)) &&
       host.nav.isConnected;
     function paint() {
       if (!visible) return;
@@ -952,6 +967,8 @@
     observer.observe(host.columns.parentElement, { childList: true });
     observer.observe(host.nav.parentElement, { childList: true });
     observer.observe(host.profile.parentElement, { childList: true });
+    observer.observe(host.columns, { childList: true, subtree: true });
+    observer.observe(host.nav.parentElement.parentElement, { childList: true });
     window.addEventListener("hashchange", route);
     route();
   }

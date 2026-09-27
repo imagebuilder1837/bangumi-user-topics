@@ -193,6 +193,81 @@ test("existing extension focus is temporarily transferred without replacing its 
   app.dom.window.close();
 });
 
+test("a friend's sorting control keeps its listener and hidden-list updates across entry", async () => {
+  for (const beforeStart of [true, false]) {
+    const app = open("/user/sai/friends", "friends");
+    const list = app.document.querySelector("#memberUserList");
+    const button = app.document.createElement("button");
+    button.textContent = "排序";
+    const sort = () => list.append(list.firstElementChild);
+    button.addEventListener("click", sort);
+    const addSorter = () => list.parentElement.prepend(button);
+    if (beforeStart) addSorter();
+    enter(app);
+    await tick();
+    if (!beforeStart) addSorter();
+    const last = app.document.createElement("li");
+    last.textContent = "new friend";
+    list.append(last);
+    button.click();
+    assert.equal(list.firstElementChild, last);
+    app.window.location.hash = "#other";
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    assert.equal(button.isConnected, true);
+    assert.equal(list.firstElementChild, last);
+    button.click();
+    assert.equal(list.lastElementChild, last);
+    app.dom.window.close();
+  }
+});
+
+test("async results do not discard keyboard focus on the category link", async () => {
+  let finish;
+  const app = open("/user/sai/friends#posts/group", "friends", {
+    respond: (u) =>
+      new Promise((resolve) => {
+        finish = () =>
+          resolve({
+            data: [],
+            pagination: {
+              total: 0,
+              offset: Number(u.searchParams.get("offset")),
+              limit: Number(u.searchParams.get("limit")),
+              totalIsEstimate: false,
+            },
+            meta: {},
+          });
+      }),
+  });
+  const link = app.document.querySelector(
+    '[data-user-topics-subnav] a[href="#posts/group"]',
+  );
+  link.focus();
+  await tick();
+  finish();
+  await tick();
+  assert.equal(app.document.activeElement, link);
+  assert.equal(link.isConnected, true);
+  app.dom.window.close();
+});
+
+test("removing the host's original subnavigation ends takeover without resurrecting it", async () => {
+  const app = open("/anime/list/sai/collect#posts/group", "state", {
+    subnav: true,
+  });
+  await tick();
+  const columns = app.document.querySelector(".columns");
+  const nativeSub = app.document.querySelector(
+    ".navSubTabsWrapper:not([data-user-topics-subnav])",
+  );
+  nativeSub.remove();
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);
+  assert.equal(app.document.querySelector(".columns"), columns);
+  app.dom.window.close();
+});
+
 test("unknown or mismatched host structures do not insert an entry or request", () => {
   for (const [path, shape] of [
     ["/user/sai#posts", "home"],

@@ -72,6 +72,12 @@ export function start(
   const mounted = () =>
     host.columns.isConnected &&
     host.footer.parentElement === host.columns.parentElement &&
+    host.bodyEvidence.isConnected &&
+    host.columns.contains(host.bodyEvidence) &&
+    (!host.originalSub ||
+      (host.originalSub.isConnected &&
+        host.originalSub.parentElement ===
+          host.nav.parentElement.parentElement)) &&
     host.nav.isConnected;
   function paint() {
     if (!visible) return;
@@ -226,6 +232,8 @@ export function start(
   observer.observe(host.columns.parentElement, { childList: true });
   observer.observe(host.nav.parentElement, { childList: true });
   observer.observe(host.profile.parentElement, { childList: true });
+  observer.observe(host.columns, { childList: true, subtree: true });
+  observer.observe(host.nav.parentElement.parentElement, { childList: true });
   window.addEventListener("hashchange", route);
   route();
 }
