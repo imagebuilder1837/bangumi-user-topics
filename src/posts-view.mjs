@@ -6,16 +6,31 @@ function el(document, tag, className, text) {
 }
 export function renderPosts(
   root,
-  { nickname, state, page, onNext, onPrevious, onRetry },
+  { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
 ) {
   const d = root.ownerDocument;
   root.replaceChildren();
   const title = el(d, "h2", "title", `${nickname}的帖子`);
   root.append(title);
+  const tabs = el(d, "div", "navSubTabsWrapper");
+  const nav = el(d, "ul", "navSubTabs");
+  for (const [filter, label, hash] of [
+    ["all", "全部帖子", "#posts"],
+    ["group", "小组话题", "#posts/group"],
+    ["subject", "条目讨论", "#posts/subject"],
+  ]) {
+    const li = el(d, "li");
+    const a = el(d, "a", filter === category ? "focus" : "", label);
+    a.href = hash;
+    li.append(a);
+    nav.append(li);
+  }
+  tabs.append(nav);
+  root.append(tabs);
   const status = el(d, "div", "grey");
   status.setAttribute("role", "status");
   root.append(status);
-  if (state.loading) status.textContent = "正在加载小组话题…";
+  if (state.loading) status.textContent = "正在加载帖子…";
   if (state.items?.length) {
     const list = el(d, "div", "entry-list");
     for (const topic of state.items) {
@@ -38,7 +53,9 @@ export function renderPosts(
   } else if (!state.loading && !state.error)
     status.textContent = "没有找到已收录的帖子";
   if (state.error || state.warning) {
-    status.textContent = state.error?.message || "无法确认是否还有下一页";
+    status.textContent =
+      state.error?.message ||
+      `无法确认是否还有下一页：${state.warning?.message || "请继续重试"}`;
     const retry = el(d, "button", "", "重试");
     retry.type = "button";
     retry.addEventListener("click", onRetry);
@@ -48,7 +65,7 @@ export function renderPosts(
     const pages = el(d, "div", "page_inner");
     if (page > 1) {
       const previous = el(d, "a", "p", "上一页");
-      previous.href = "#posts/group";
+      previous.href = category === "all" ? "#posts" : `#posts/${category}`;
       if (state.loading) previous.setAttribute("aria-disabled", "true");
       previous.addEventListener("click", (event) => {
         event.preventDefault();
@@ -67,7 +84,7 @@ export function renderPosts(
         state.next === "unknown" ? "下一页（未确认）" : "下一页",
       );
       next.dataset.next = "";
-      next.href = "#posts/group";
+      next.href = category === "all" ? "#posts" : `#posts/${category}`;
       if (state.loading) next.setAttribute("aria-disabled", "true");
       next.addEventListener("click", (event) => {
         event.preventDefault();

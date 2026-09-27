@@ -59,7 +59,7 @@ test("development bundle completes the group reading and pagination journey", as
     };
   };
   dom.window.eval(bundle);
-  dom.window.document.querySelector("[data-user-topics-link] a").click();
+  dom.window.location.hash = "#posts/group";
   dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
   for (let i = 0; i < 4; i++)
     await new Promise((resolve) => setTimeout(resolve, 0));

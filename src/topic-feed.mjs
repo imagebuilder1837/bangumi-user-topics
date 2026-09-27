@@ -1,91 +1,166 @@
-// A single user, single stream: raw service position and unique displayed prefix are distinct.
-export function createTopicFeed(search, { user, origin }) {
-  const topics = [];
-  const keys = new Set();
-  const pages = new Map();
-  let offset = 0,
-    exhausted = false;
-  let failure = null;
-  const targets = new Map();
+// Service cursors are shared; displayed identities and late exclusions belong to a category.
+const kinds = ["group", "subject"];
+const order = (a, b) =>
+  b.createdAt - a.createdAt ||
+  kinds.indexOf(a.kind) - kinds.indexOf(b.kind) ||
+  a.received - b.received;
+const unavailable = (stream) =>
+  new Error(
+    stream.offset > 5000
+      ? "已达到服务检索上限，可能仍有更早的帖子"
+      : "无法确定当前页，请继续重试",
+  );
 
-  async function prepare(page, retry = false) {
-    if (pages.has(page) && !retry)
+export function createTopicFeed(search, { user, origin }) {
+  const streams = Object.fromEntries(
+    kinds.map((kind) => [
+      kind,
+      { offset: 0, exhausted: false, pending: null, rows: [] },
+    ]),
+  );
+  const known = new Map();
+  const views = Object.fromEntries(
+    ["all", ...kinds].map((kind) => [
+      kind,
+      { pages: new Map(), excluded: new Set(), targets: new Map() },
+    ]),
+  );
+  let received = 0;
+
+  function candidates(category) {
+    const view = views[category];
+    const displayed = new Set([...view.pages.values()].flat());
+    const boundary = view.pages.size
+      ? known.get(view.pages.get(Math.max(...view.pages.keys())).at(-1))
+      : null;
+    const result = [];
+    for (const kind of category === "all" ? kinds : [category]) {
+      for (const topic of streams[kind].rows) {
+        if (view.excluded.has(topic.key)) continue;
+        if (
+          boundary &&
+          !displayed.has(topic.key) &&
+          order(topic, boundary) <= 0
+        ) {
+          view.excluded.add(topic.key);
+          continue;
+        }
+        result.push(topic);
+      }
+    }
+    result.sort(order);
+    return result;
+  }
+
+  // Each required stream supplies N effective candidates (including frozen entries),
+  // or proves natural exhaustion. Raw rows and globally cached keys are not a prefix.
+  async function fill(category, count, target) {
+    const required = category === "all" ? kinds : [category];
+    await Promise.all(
+      required.map(async (kind) => {
+        const stream = streams[kind];
+        while (true) {
+          const available = candidates(category).filter(
+            (t) => t.kind === kind,
+          ).length;
+          if (available >= count || stream.exhausted) return;
+          if (stream.offset > 5000) throw unavailable(stream);
+          if (!stream.pending && target.requests[kind] >= 3)
+            throw unavailable(stream);
+          if (!stream.pending) {
+            const offset = stream.offset;
+            const limit = Math.min(50, Math.max(1, count - available));
+            stream.pending = search({ user, origin, kind, offset, limit })
+              .then((batch) => {
+                if (!Array.isArray(batch) || batch.length > limit)
+                  throw new Error("SearchEncore 返回格式无效");
+                // A successful batch is accepted atomically by the adapter.
+                for (const item of batch) {
+                  if (!known.has(item.key)) {
+                    item.received = received++;
+                    known.set(item.key, item);
+                    stream.rows.push(item);
+                  }
+                }
+                stream.offset += batch.length;
+                if (!batch.length) stream.exhausted = true;
+              })
+              .finally(() => {
+                stream.pending = null;
+              });
+          }
+          target.requests[kind]++;
+          await stream.pending;
+        }
+      }),
+    );
+  }
+
+  async function prepare(category, page, retry = false) {
+    const view = views[category];
+    if (!view || !Number.isInteger(page) || page < 1)
+      throw new Error("无效分类或页码");
+    const id = String(page);
+    let target = view.targets.get(id);
+    if (!target || retry) {
+      target = { requests: { group: 0, subject: 0 }, failure: null };
+      view.targets.set(id, target);
+    }
+    if (view.pages.has(page) && !retry) {
+      const entries = candidates(category);
       return {
-        items: pages.get(page),
+        items: view.pages.get(page).map((key) => known.get(key)),
         next:
-          pages.has(page + 1) || topics.length > page * 10
+          entries.length > page * 10
             ? "yes"
-            : exhausted
+            : (category === "all" ? kinds : [category]).every(
+                  (k) => streams[k].exhausted,
+                )
               ? "no"
               : "unknown",
       };
-    const goal = page * 10;
-    const key = String(page);
-    let target = targets.get(key);
-    if (!target || retry) {
-      target = { requests: 0, failure: null };
-      targets.set(key, target);
-      failure = null;
     }
     if (target.failure && !retry) return { error: target.failure };
-    // Resolve a reliable current page first; prefetch just one extra candidate.
-    async function fill(count) {
-      while (
-        topics.length < count &&
-        !exhausted &&
-        offset <= 5000 &&
-        target.requests < 3
-      ) {
-        const limit = Math.min(50, Math.max(1, count - topics.length));
-        target.requests++;
-        try {
-          const batch = await search({ user, origin, offset, limit });
-          for (const topic of batch)
-            if (!keys.has(topic.key)) {
-              keys.add(topic.key);
-              topics.push(topic);
-            }
-          offset += batch.length;
-          if (batch.length === 0) {
-            exhausted = true;
-            break;
-          }
-        } catch (error) {
-          failure = error;
-          target.failure = error;
-          break;
-        }
-      }
+    const goal = page * 10;
+    let problem = null;
+    try {
+      await fill(category, goal + 1, target);
+    } catch (error) {
+      problem = error;
     }
-    await fill(goal + 1);
-    if (topics.length < (page - 1) * 10 + 1 && !exhausted)
-      return {
-        error:
-          failure ||
-          new Error(
-            offset > 5000
-              ? "已达到服务检索上限，可能仍有更早的帖子"
-              : "无法确定下一页，请继续重试",
-          ),
-      };
-    if (topics.length < (page - 1) * 10 + 1) return { items: [], next: "no" };
-    if (topics.length < goal && !exhausted)
-      return {
-        error:
-          failure ||
-          new Error(
-            offset > 5000
-              ? "已达到服务检索上限，可能仍有更早的帖子"
-              : "无法确定当前页，请继续重试",
-          ),
-      };
-    const items = topics.slice((page - 1) * 10, goal);
-    pages.set(page, items);
+    let entries = candidates(category);
+    const required = category === "all" ? kinds : [category];
+    const exhausted = () => required.every((k) => streams[k].exhausted);
+    const reliable = (count) =>
+      required.every(
+        (k) =>
+          streams[k].exhausted ||
+          entries.filter((t) => t.kind === k).length >= count,
+      );
+    const start = (page - 1) * 10;
+    if (!reliable(goal)) {
+      target.failure =
+        problem ||
+        unavailable(streams[category === "all" ? "group" : category]);
+      return { error: target.failure };
+    }
+    if (entries.length <= start) return { items: [], next: "no" };
+    // Freeze only the displayed page, never the lookahead candidate.
+    const keys = entries.slice(start, goal).map((t) => t.key);
+    entries = candidates(category);
     return {
-      items,
-      next: topics.length > goal ? "yes" : exhausted ? "no" : "unknown",
-      warning: failure,
+      items: (view.pages.get(page) || keys).map((key) => known.get(key)),
+      next: entries.length > goal ? "yes" : exhausted() ? "no" : "unknown",
+      warning: problem,
     };
   }
-  return { prepare };
+  function commit(category, page, items) {
+    const view = views[category];
+    if (!view.pages.has(page))
+      view.pages.set(
+        page,
+        items.map((topic) => topic.key),
+      );
+  }
+  return { prepare, commit };
 }

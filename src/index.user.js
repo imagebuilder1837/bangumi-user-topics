@@ -158,7 +158,7 @@
 
   const safeID = (value) => Number.isSafeInteger(value) && value >= 0;
 
-  function normalizeBatch(payload, { offset, limit, origin }) {
+  function normalizeBatch(payload, { offset, limit, origin, kind = "group" }) {
     if (
       !payload ||
       !Array.isArray(payload.data) ||
@@ -178,7 +178,7 @@
         !safeID(row.parentID) ||
         row.id === 0 ||
         row.parentID === 0 ||
-        row.kind !== 0 ||
+        row.kind !== (kind === "group" ? 0 : 1) ||
         typeof row.title !== "string" ||
         !safeID(row.replyCount) ||
         !safeID(row.createdAt) ||
@@ -192,13 +192,14 @@
         throw new Error("SearchEncore 主题数据无效");
       }
       return {
-        key: `group:${row.id}`,
+        key: `${kind}:${row.id}`,
+        kind,
         title: row.title || "无标题",
-        parent: row.parentName || "小组话题",
+        parent: row.parentName || (kind === "group" ? "小组话题" : "条目讨论"),
         replies: row.replyCount,
         createdAt: row.createdAt,
-        url: `${origin}/group/topic/${row.id}`,
-        parentURL: `${origin}/group/${row.parentID}`,
+        url: `${origin}/${kind}/topic/${row.id}`,
+        parentURL: `${origin}/${kind}/${row.parentID}`,
       };
     });
     if (topics.length > limit) throw new Error("SearchEncore 返回过多数据");
@@ -209,7 +210,7 @@
     fetch,
     { setTimeout: delay = setTimeout, clearTimeout: clear = clearTimeout } = {},
   ) {
-    return async ({ user, offset, limit, origin }) => {
+    return async ({ user, offset, limit, origin, kind = "group" }) => {
       if (
         !Number.isInteger(offset) ||
         offset < 0 ||
@@ -219,7 +220,9 @@
         limit > 50
       )
         throw new Error("请求超出检索范围");
-      const url = new URL("https://bgmdb.ry.mk/v1/search/group-topics");
+      if (kind !== "group" && kind !== "subject")
+        throw new Error("未知主题来源");
+      const url = new URL(`https://bgmdb.ry.mk/v1/search/${kind}-topics`);
       url.search = new URLSearchParams({
         q: `user:${user}`,
         sort: "newest",
@@ -235,103 +238,183 @@
         });
         if (!response.ok)
           throw new Error(`SearchEncore HTTP ${response.status}`);
-        return normalizeBatch(await response.json(), { offset, limit, origin });
+        return normalizeBatch(await response.json(), {
+          offset,
+          limit,
+          origin,
+          kind,
+        });
       } finally {
         clear(timeout);
       }
     };
   }
 
-  // A single user, single stream: raw service position and unique displayed prefix are distinct.
-  function createTopicFeed(search, { user, origin }) {
-    const topics = [];
-    const keys = new Set();
-    const pages = new Map();
-    let offset = 0,
-      exhausted = false;
-    let failure = null;
-    const targets = new Map();
+  // Service cursors are shared; displayed identities and late exclusions belong to a category.
+  const kinds = ["group", "subject"];
+  const order = (a, b) =>
+    b.createdAt - a.createdAt ||
+    kinds.indexOf(a.kind) - kinds.indexOf(b.kind) ||
+    a.received - b.received;
+  const unavailable = (stream) =>
+    new Error(
+      stream.offset > 5000
+        ? "已达到服务检索上限，可能仍有更早的帖子"
+        : "无法确定当前页，请继续重试",
+    );
 
-    async function prepare(page, retry = false) {
-      if (pages.has(page) && !retry)
+  function createTopicFeed(search, { user, origin }) {
+    const streams = Object.fromEntries(
+      kinds.map((kind) => [
+        kind,
+        { offset: 0, exhausted: false, pending: null, rows: [] },
+      ]),
+    );
+    const known = new Map();
+    const views = Object.fromEntries(
+      ["all", ...kinds].map((kind) => [
+        kind,
+        { pages: new Map(), excluded: new Set(), targets: new Map() },
+      ]),
+    );
+    let received = 0;
+
+    function candidates(category) {
+      const view = views[category];
+      const displayed = new Set([...view.pages.values()].flat());
+      const boundary = view.pages.size
+        ? known.get(view.pages.get(Math.max(...view.pages.keys())).at(-1))
+        : null;
+      const result = [];
+      for (const kind of category === "all" ? kinds : [category]) {
+        for (const topic of streams[kind].rows) {
+          if (view.excluded.has(topic.key)) continue;
+          if (
+            boundary &&
+            !displayed.has(topic.key) &&
+            order(topic, boundary) <= 0
+          ) {
+            view.excluded.add(topic.key);
+            continue;
+          }
+          result.push(topic);
+        }
+      }
+      result.sort(order);
+      return result;
+    }
+
+    // Each required stream supplies N effective candidates (including frozen entries),
+    // or proves natural exhaustion. Raw rows and globally cached keys are not a prefix.
+    async function fill(category, count, target) {
+      const required = category === "all" ? kinds : [category];
+      await Promise.all(
+        required.map(async (kind) => {
+          const stream = streams[kind];
+          while (true) {
+            const available = candidates(category).filter(
+              (t) => t.kind === kind,
+            ).length;
+            if (available >= count || stream.exhausted) return;
+            if (stream.offset > 5000) throw unavailable(stream);
+            if (!stream.pending && target.requests[kind] >= 3)
+              throw unavailable(stream);
+            if (!stream.pending) {
+              const offset = stream.offset;
+              const limit = Math.min(50, Math.max(1, count - available));
+              stream.pending = search({ user, origin, kind, offset, limit })
+                .then((batch) => {
+                  if (!Array.isArray(batch) || batch.length > limit)
+                    throw new Error("SearchEncore 返回格式无效");
+                  // A successful batch is accepted atomically by the adapter.
+                  for (const item of batch) {
+                    if (!known.has(item.key)) {
+                      item.received = received++;
+                      known.set(item.key, item);
+                      stream.rows.push(item);
+                    }
+                  }
+                  stream.offset += batch.length;
+                  if (!batch.length) stream.exhausted = true;
+                })
+                .finally(() => {
+                  stream.pending = null;
+                });
+            }
+            target.requests[kind]++;
+            await stream.pending;
+          }
+        }),
+      );
+    }
+
+    async function prepare(category, page, retry = false) {
+      const view = views[category];
+      if (!view || !Number.isInteger(page) || page < 1)
+        throw new Error("无效分类或页码");
+      const id = String(page);
+      let target = view.targets.get(id);
+      if (!target || retry) {
+        target = { requests: { group: 0, subject: 0 }, failure: null };
+        view.targets.set(id, target);
+      }
+      if (view.pages.has(page) && !retry) {
+        const entries = candidates(category);
         return {
-          items: pages.get(page),
+          items: view.pages.get(page).map((key) => known.get(key)),
           next:
-            pages.has(page + 1) || topics.length > page * 10
+            entries.length > page * 10
               ? "yes"
-              : exhausted
+              : (category === "all" ? kinds : [category]).every(
+                    (k) => streams[k].exhausted,
+                  )
                 ? "no"
                 : "unknown",
         };
-      const goal = page * 10;
-      const key = String(page);
-      let target = targets.get(key);
-      if (!target || retry) {
-        target = { requests: 0, failure: null };
-        targets.set(key, target);
-        failure = null;
       }
       if (target.failure && !retry) return { error: target.failure };
-      // Resolve a reliable current page first; prefetch just one extra candidate.
-      async function fill(count) {
-        while (
-          topics.length < count &&
-          !exhausted &&
-          offset <= 5000 &&
-          target.requests < 3
-        ) {
-          const limit = Math.min(50, Math.max(1, count - topics.length));
-          target.requests++;
-          try {
-            const batch = await search({ user, origin, offset, limit });
-            for (const topic of batch)
-              if (!keys.has(topic.key)) {
-                keys.add(topic.key);
-                topics.push(topic);
-              }
-            offset += batch.length;
-            if (batch.length === 0) {
-              exhausted = true;
-              break;
-            }
-          } catch (error) {
-            failure = error;
-            target.failure = error;
-            break;
-          }
-        }
+      const goal = page * 10;
+      let problem = null;
+      try {
+        await fill(category, goal + 1, target);
+      } catch (error) {
+        problem = error;
       }
-      await fill(goal + 1);
-      if (topics.length < (page - 1) * 10 + 1 && !exhausted)
-        return {
-          error:
-            failure ||
-            new Error(
-              offset > 5000
-                ? "已达到服务检索上限，可能仍有更早的帖子"
-                : "无法确定下一页，请继续重试",
-            ),
-        };
-      if (topics.length < (page - 1) * 10 + 1) return { items: [], next: "no" };
-      if (topics.length < goal && !exhausted)
-        return {
-          error:
-            failure ||
-            new Error(
-              offset > 5000
-                ? "已达到服务检索上限，可能仍有更早的帖子"
-                : "无法确定当前页，请继续重试",
-            ),
-        };
-      const items = topics.slice((page - 1) * 10, goal);
-      pages.set(page, items);
+      let entries = candidates(category);
+      const required = category === "all" ? kinds : [category];
+      const exhausted = () => required.every((k) => streams[k].exhausted);
+      const reliable = (count) =>
+        required.every(
+          (k) =>
+            streams[k].exhausted ||
+            entries.filter((t) => t.kind === k).length >= count,
+        );
+      const start = (page - 1) * 10;
+      if (!reliable(goal)) {
+        target.failure =
+          problem ||
+          unavailable(streams[category === "all" ? "group" : category]);
+        return { error: target.failure };
+      }
+      if (entries.length <= start) return { items: [], next: "no" };
+      // Freeze only the displayed page, never the lookahead candidate.
+      const keys = entries.slice(start, goal).map((t) => t.key);
+      entries = candidates(category);
       return {
-        items,
-        next: topics.length > goal ? "yes" : exhausted ? "no" : "unknown",
-        warning: failure,
+        items: (view.pages.get(page) || keys).map((key) => known.get(key)),
+        next: entries.length > goal ? "yes" : exhausted() ? "no" : "unknown",
+        warning: problem,
       };
     }
-    return { prepare };
+    function commit(category, page, items) {
+      const view = views[category];
+      if (!view.pages.has(page))
+        view.pages.set(
+          page,
+          items.map((topic) => topic.key),
+        );
+    }
+    return { prepare, commit };
   }
 
   function el(document, tag, className, text) {
@@ -342,16 +425,31 @@
   }
   function renderPosts(
     root,
-    { nickname, state, page, onNext, onPrevious, onRetry },
+    { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
   ) {
     const d = root.ownerDocument;
     root.replaceChildren();
     const title = el(d, "h2", "title", `${nickname}的帖子`);
     root.append(title);
+    const tabs = el(d, "div", "navSubTabsWrapper");
+    const nav = el(d, "ul", "navSubTabs");
+    for (const [filter, label, hash] of [
+      ["all", "全部帖子", "#posts"],
+      ["group", "小组话题", "#posts/group"],
+      ["subject", "条目讨论", "#posts/subject"],
+    ]) {
+      const li = el(d, "li");
+      const a = el(d, "a", filter === category ? "focus" : "", label);
+      a.href = hash;
+      li.append(a);
+      nav.append(li);
+    }
+    tabs.append(nav);
+    root.append(tabs);
     const status = el(d, "div", "grey");
     status.setAttribute("role", "status");
     root.append(status);
-    if (state.loading) status.textContent = "正在加载小组话题…";
+    if (state.loading) status.textContent = "正在加载帖子…";
     if (state.items?.length) {
       const list = el(d, "div", "entry-list");
       for (const topic of state.items) {
@@ -374,7 +472,9 @@
     } else if (!state.loading && !state.error)
       status.textContent = "没有找到已收录的帖子";
     if (state.error || state.warning) {
-      status.textContent = state.error?.message || "无法确认是否还有下一页";
+      status.textContent =
+        state.error?.message ||
+        `无法确认是否还有下一页：${state.warning?.message || "请继续重试"}`;
       const retry = el(d, "button", "", "重试");
       retry.type = "button";
       retry.addEventListener("click", onRetry);
@@ -384,7 +484,7 @@
       const pages = el(d, "div", "page_inner");
       if (page > 1) {
         const previous = el(d, "a", "p", "上一页");
-        previous.href = "#posts/group";
+        previous.href = category === "all" ? "#posts" : `#posts/${category}`;
         if (state.loading) previous.setAttribute("aria-disabled", "true");
         previous.addEventListener("click", (event) => {
           event.preventDefault();
@@ -403,7 +503,7 @@
           state.next === "unknown" ? "下一页（未确认）" : "下一页",
         );
         next.dataset.next = "";
-        next.href = "#posts/group";
+        next.href = category === "all" ? "#posts" : `#posts/${category}`;
         if (state.loading) next.setAttribute("aria-disabled", "true");
         next.addEventListener("click", (event) => {
           event.preventDefault();
@@ -419,22 +519,27 @@
     return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()} ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
   }
 
+  const categories = {
+    "#posts": "all",
+    "#posts/group": "group",
+    "#posts/subject": "subject",
+  };
+
   // Application boundary: a real Window and one replaceable network boundary.
   function start(window, { fetch = window.fetch.bind(window), timers } = {}) {
     const host = inspectHost(window);
     if (!host) {
-      if (window.location.hash === "#posts/group")
+      if (categories[window.location.hash])
         console.warn("用户帖子：当前页面无法安全挂载");
       return;
     }
     const { document } = window;
-    let entry = host.nav.querySelector("[data-user-topics-link]");
-    if (entry) return;
-    entry = document.createElement("li");
+    if (host.nav.querySelector("[data-user-topics-link]")) return;
+    const entry = document.createElement("li");
     entry.dataset.userTopicsLink = "";
     const anchor = document.createElement("a");
     anchor.textContent = "帖子";
-    anchor.href = "#posts/group";
+    anchor.href = "#posts";
     entry.append(anchor);
     host.blog.parentElement.after(entry);
     const view = createHostView(window, host);
@@ -442,6 +547,12 @@
       user: host.user,
       origin: window.location.origin,
     });
+    const states = Object.fromEntries(
+      Object.keys(categories).map((hash) => [
+        categories[hash],
+        { page: 1, current: { loading: false }, pending: null },
+      ]),
+    );
     let explicitNavigation = false;
     anchor.addEventListener("click", (event) => {
       if (
@@ -450,15 +561,14 @@
         !event.ctrlKey &&
         !event.shiftKey &&
         !event.altKey
-      )
+      ) {
         explicitNavigation = true;
+        // A same-hash click keeps the already active category; hashchange handles new hashes.
+      }
     });
-    let page = 1,
-      visible = false,
-      generation = 0,
-      current = { loading: false },
-      busy = false,
-      job = null;
+    let visible = false,
+      category = null,
+      generation = 0;
     const mounted = () =>
       host.columns.isConnected &&
       host.footer.parentElement === host.columns.parentElement &&
@@ -466,56 +576,76 @@
     function paint() {
       if (!visible) return;
       const root = document.querySelector("[data-user-topics-view]");
+      const state = states[category];
       if (root)
         renderPosts(root, {
           nickname: host.nickname,
-          state: current,
-          page,
-          onNext: () => load(page + 1),
-          onPrevious: () => load(page - 1),
-          onRetry: () => load(current.target || page, true),
+          category,
+          state: state.current,
+          page: state.page,
+          onNext: () => load(category, state.page + 1),
+          onPrevious: () => load(category, state.page - 1),
+          onRetry: () =>
+            load(category, state.current.target || state.page, true),
         });
     }
-    async function load(target, retry = false) {
-      if (!visible || !mounted()) return;
-      if (busy) {
-        await job;
-        if (visible) return load(target, retry);
-        return;
-      }
+    async function load(filter, target, retry = false) {
+      if (!visible || category !== filter || !mounted()) return;
+      const state = states[filter];
+      if (state.pending) return;
       const token = generation;
-      busy = true;
-      current = {
-        ...current,
+      state.current = {
+        ...state.current,
         loading: true,
         error: null,
         warning: null,
         target,
       };
       paint();
-      job = feed.prepare(target, retry);
-      const result = await job;
-      busy = false;
-      job = null;
-      if (token !== generation || !visible || !mounted()) return;
-      const previousPage = page;
+      const job = feed.prepare(filter, target, retry);
+      state.pending = job;
+      let result;
+      try {
+        result = await job;
+      } catch (error) {
+        result = { error };
+      }
+      state.pending = null;
+      if (
+        token !== generation ||
+        !visible ||
+        category !== filter ||
+        !mounted()
+      ) {
+        state.current = { ...state.current, loading: false };
+        if (visible && category === filter && mounted())
+          load(filter, states[filter].page);
+        return;
+      }
+      const previousPage = state.page;
       if (result.error)
-        current = { ...current, loading: false, error: result.error, target };
+        state.current = {
+          ...state.current,
+          loading: false,
+          error: result.error,
+          target,
+        };
       else if (result.items.length) {
-        page = target;
-        current = { ...result, loading: false };
-      } else current = { ...current, loading: false, next: "no" };
+        feed.commit(filter, target, result.items);
+        state.page = target;
+        state.current = { ...result, loading: false };
+      } else state.current = { ...state.current, loading: false, next: "no" };
       paint();
-      if (target !== previousPage && page === target && visible) {
+      if (target !== previousPage && state.page === target) {
         const root = document.querySelector("[data-user-topics-view]");
         if (root)
           window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
       }
     }
     function route() {
-      const active = window.location.hash === "#posts/group";
+      const next = categories[window.location.hash];
       if (
-        !active ||
+        !next ||
         !mounted() ||
         (visible &&
           !document.querySelector("[data-user-topics-view]")?.isConnected)
@@ -524,25 +654,30 @@
         if (visible) {
           generation++;
           visible = false;
+          category = null;
           anchor.classList.remove("focus");
           view.hide();
         }
         return;
       }
-      if (visible) {
+      if (visible && category === next) {
         explicitNavigation = false;
         return;
       }
+      const switched = visible;
+      generation++;
       visible = true;
+      category = next;
       const root = view.show();
       anchor.classList.add("focus");
       paint();
       if (explicitNavigation)
         window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
       explicitNavigation = false;
-      load(page);
+      if (!states[next].current.items || switched) {
+        if (!states[next].pending) load(next, states[next].page);
+      }
     }
-    // Observe only structural boundaries; a detached footer or navigation must not leave the host hidden.
     const observer = new window.MutationObserver(() => {
       if (
         visible &&
