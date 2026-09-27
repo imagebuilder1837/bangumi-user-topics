@@ -104,7 +104,13 @@ export function createHostView(window, host) {
       focus.classList.add("focus");
     if (host.wrapper.hasAttribute("data-user-topics-active"))
       delete host.wrapper.dataset.userTopicsActive;
-    if (previousScroll != null && typeof window.scrollTo === "function") {
+    const hash = window.location.hash.slice(1);
+    const nativeAnchor = hash && document.getElementById(hash);
+    if (
+      !nativeAnchor &&
+      previousScroll != null &&
+      typeof window.scrollTo === "function"
+    ) {
       try {
         window.scrollTo(0, previousScroll);
       } catch {

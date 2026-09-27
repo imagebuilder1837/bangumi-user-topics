@@ -34,7 +34,8 @@ function setup({
   markup = html,
 } = {}) {
   const dom = new JSDOM(markup, { url });
-  dom.window.scrollTo = () => {};
+  const scrolls = [];
+  dom.window.scrollTo = (...point) => scrolls.push(point);
   const requests = [];
   const fetch = async (input, init) => {
     const request = new URL(input);
@@ -47,7 +48,13 @@ function setup({
     return { ok: true, json: async () => result };
   };
   start(dom.window, { fetch });
-  return { window: dom.window, document: dom.window.document, requests, dom };
+  return {
+    window: dom.window,
+    document: dom.window.document,
+    requests,
+    scrolls,
+    dom,
+  };
 }
 function enter(app) {
   app.document.querySelector("[data-user-topics-link] a").click();
@@ -232,6 +239,57 @@ test("late response after exit never reopens host or steals a newer route", asyn
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   assert.equal(columns.style.display, "");
   assert.equal(app.window.location.hash, "#other");
+  app.dom.window.close();
+});
+
+test("duplicate batches advance raw offsets and stop at three requests without declaring an empty archive", async () => {
+  const app = setup({
+    respond: (offset, limit) => envelope([hit(1)], offset, limit),
+  });
+  enter(app);
+  await tick();
+  assert.deepEqual(
+    app.requests.map(({ request }) => request.searchParams.get("offset")),
+    ["0", "1", "2"],
+  );
+  assert.equal(app.document.querySelectorAll(".entry-list .item").length, 0);
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /无法确定/,
+  );
+  app.dom.window.close();
+});
+
+test("successful pagination scrolls to the list, while a native exit anchor keeps browser scroll", async () => {
+  const app = setup({
+    respond: (offset, limit) =>
+      envelope(
+        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        offset,
+        limit,
+      ),
+  });
+  enter(app);
+  await tick();
+  const before = app.scrolls.length;
+  app.document.querySelector("[data-next]").click();
+  await tick();
+  assert.ok(app.scrolls.length > before);
+  const after = app.scrolls.length;
+  app.window.location.hash = "#entry_list";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(app.scrolls.length, after);
+  app.dom.window.close();
+});
+
+test("removing the host structure while active restores the remaining host state", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+  const parent = app.document.querySelector(".columns").parentElement;
+  const columns = app.document.querySelector(".columns");
+  parent.querySelector("#footer").remove();
+  await tick();
+  assert.equal(columns.style.display, "");
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   app.dom.window.close();
 });
 

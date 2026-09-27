@@ -29,6 +29,17 @@ export function start(
     user: host.user,
     origin: window.location.origin,
   });
+  let explicitNavigation = false;
+  anchor.addEventListener("click", (event) => {
+    if (
+      event.button === 0 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey
+    )
+      explicitNavigation = true;
+  });
   let page = 1,
     visible = false,
     generation = 0,
@@ -68,6 +79,7 @@ export function start(
     busy = false;
     job = null;
     if (token !== generation || !visible || !mounted()) return;
+    const previousPage = page;
     if (result.error)
       current = { ...current, loading: false, error: result.error, target };
     else if (result.items.length) {
@@ -75,10 +87,21 @@ export function start(
       current = { ...result, loading: false };
     } else current = { ...current, loading: false, next: "no" };
     paint();
+    if (target !== previousPage && page === target && visible) {
+      const root = document.querySelector("[data-user-topics-view]");
+      if (root)
+        window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+    }
   }
   function route() {
     const active = window.location.hash === "#posts/group";
-    if (!active || !mounted()) {
+    if (
+      !active ||
+      !mounted() ||
+      (visible &&
+        !document.querySelector("[data-user-topics-view]")?.isConnected)
+    ) {
+      explicitNavigation = false;
       if (visible) {
         generation++;
         visible = false;
@@ -87,13 +110,31 @@ export function start(
       }
       return;
     }
-    if (visible) return;
+    if (visible) {
+      explicitNavigation = false;
+      return;
+    }
     visible = true;
-    view.show();
+    const root = view.show();
     anchor.classList.add("focus");
     paint();
+    if (explicitNavigation)
+      window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+    explicitNavigation = false;
     load(page);
   }
+  // Observe only structural boundaries; a detached footer or navigation must not leave the host hidden.
+  const observer = new window.MutationObserver(() => {
+    if (
+      visible &&
+      (!mounted() ||
+        !document.querySelector("[data-user-topics-view]")?.isConnected)
+    )
+      route();
+  });
+  observer.observe(host.columns.parentElement, { childList: true });
+  observer.observe(host.nav.parentElement, { childList: true });
+  observer.observe(host.profile.parentElement, { childList: true });
   window.addEventListener("hashchange", route);
   route();
 }

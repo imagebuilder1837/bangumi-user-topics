@@ -108,7 +108,13 @@
         focus.classList.add("focus");
       if (host.wrapper.hasAttribute("data-user-topics-active"))
         delete host.wrapper.dataset.userTopicsActive;
-      if (previousScroll != null && typeof window.scrollTo === "function") {
+      const hash = window.location.hash.slice(1);
+      const nativeAnchor = hash && document.getElementById(hash);
+      if (
+        !nativeAnchor &&
+        previousScroll != null &&
+        typeof window.scrollTo === "function"
+      ) {
         try {
           window.scrollTo(0, previousScroll);
         } catch {
@@ -211,8 +217,7 @@
     const keys = new Set();
     const pages = new Map();
     let offset = 0,
-      exhausted = false,
-      pending = null;
+      exhausted = false;
     let failure = null;
     const targets = new Map();
 
@@ -244,33 +249,24 @@
           offset <= 5000 &&
           target.requests < 3
         ) {
-          if (!pending) {
-            const limit = Math.min(50, Math.max(1, count - topics.length));
-            target.requests++;
-            pending = search({ user, origin, offset, limit });
-          } else {
-            target.requests++;
-          }
+          const limit = Math.min(50, Math.max(1, count - topics.length));
+          target.requests++;
           try {
-            const batch = await pending;
-            // Only the initiating call owns mutation; shared callers await its settled result.
-            if (batch && batch._alreadyApplied !== true) {
-              for (const topic of batch)
-                if (!keys.has(topic.key)) {
-                  keys.add(topic.key);
-                  topics.push(topic);
-                }
-              offset += batch.length;
-              if (batch.length === 0) exhausted = true;
-              Object.defineProperty(batch, "_alreadyApplied", { value: true });
+            const batch = await search({ user, origin, offset, limit });
+            for (const topic of batch)
+              if (!keys.has(topic.key)) {
+                keys.add(topic.key);
+                topics.push(topic);
+              }
+            offset += batch.length;
+            if (batch.length === 0) {
+              exhausted = true;
+              break;
             }
-            if (batch.length === 0) break;
           } catch (error) {
             failure = error;
             target.failure = error;
             break;
-          } finally {
-            pending = null;
           }
         }
       }
@@ -415,6 +411,17 @@
       user: host.user,
       origin: window.location.origin,
     });
+    let explicitNavigation = false;
+    anchor.addEventListener("click", (event) => {
+      if (
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey
+      )
+        explicitNavigation = true;
+    });
     let page = 1,
       visible = false,
       generation = 0,
@@ -460,6 +467,7 @@
       busy = false;
       job = null;
       if (token !== generation || !visible || !mounted()) return;
+      const previousPage = page;
       if (result.error)
         current = { ...current, loading: false, error: result.error, target };
       else if (result.items.length) {
@@ -467,10 +475,21 @@
         current = { ...result, loading: false };
       } else current = { ...current, loading: false, next: "no" };
       paint();
+      if (target !== previousPage && page === target && visible) {
+        const root = document.querySelector("[data-user-topics-view]");
+        if (root)
+          window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+      }
     }
     function route() {
       const active = window.location.hash === "#posts/group";
-      if (!active || !mounted()) {
+      if (
+        !active ||
+        !mounted() ||
+        (visible &&
+          !document.querySelector("[data-user-topics-view]")?.isConnected)
+      ) {
+        explicitNavigation = false;
         if (visible) {
           generation++;
           visible = false;
@@ -479,13 +498,31 @@
         }
         return;
       }
-      if (visible) return;
+      if (visible) {
+        explicitNavigation = false;
+        return;
+      }
       visible = true;
-      view.show();
+      const root = view.show();
       anchor.classList.add("focus");
       paint();
+      if (explicitNavigation)
+        window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+      explicitNavigation = false;
       load(page);
     }
+    // Observe only structural boundaries; a detached footer or navigation must not leave the host hidden.
+    const observer = new window.MutationObserver(() => {
+      if (
+        visible &&
+        (!mounted() ||
+          !document.querySelector("[data-user-topics-view]")?.isConnected)
+      )
+        route();
+    });
+    observer.observe(host.columns.parentElement, { childList: true });
+    observer.observe(host.nav.parentElement, { childList: true });
+    observer.observe(host.profile.parentElement, { childList: true });
     window.addEventListener("hashchange", route);
     route();
   }

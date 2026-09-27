@@ -4,8 +4,7 @@ export function createTopicFeed(search, { user, origin }) {
   const keys = new Set();
   const pages = new Map();
   let offset = 0,
-    exhausted = false,
-    pending = null;
+    exhausted = false;
   let failure = null;
   const targets = new Map();
 
@@ -37,33 +36,24 @@ export function createTopicFeed(search, { user, origin }) {
         offset <= 5000 &&
         target.requests < 3
       ) {
-        if (!pending) {
-          const limit = Math.min(50, Math.max(1, count - topics.length));
-          target.requests++;
-          pending = search({ user, origin, offset, limit });
-        } else {
-          target.requests++;
-        }
+        const limit = Math.min(50, Math.max(1, count - topics.length));
+        target.requests++;
         try {
-          const batch = await pending;
-          // Only the initiating call owns mutation; shared callers await its settled result.
-          if (batch && batch._alreadyApplied !== true) {
-            for (const topic of batch)
-              if (!keys.has(topic.key)) {
-                keys.add(topic.key);
-                topics.push(topic);
-              }
-            offset += batch.length;
-            if (batch.length === 0) exhausted = true;
-            Object.defineProperty(batch, "_alreadyApplied", { value: true });
+          const batch = await search({ user, origin, offset, limit });
+          for (const topic of batch)
+            if (!keys.has(topic.key)) {
+              keys.add(topic.key);
+              topics.push(topic);
+            }
+          offset += batch.length;
+          if (batch.length === 0) {
+            exhausted = true;
+            break;
           }
-          if (batch.length === 0) break;
         } catch (error) {
           failure = error;
           target.failure = error;
           break;
-        } finally {
-          pending = null;
         }
       }
     }
