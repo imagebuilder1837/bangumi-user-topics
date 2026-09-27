@@ -206,9 +206,20 @@
     return topics;
   }
 
+  class RateLimitError extends Error {
+    constructor(retryAfter) {
+      super("SearchEncore 请求过于频繁，请稍后重试");
+      this.retryAfter = retryAfter;
+    }
+  }
+
   function createSearchEncore(
     fetch,
-    { setTimeout: delay = setTimeout, clearTimeout: clear = clearTimeout } = {},
+    {
+      setTimeout: delay = setTimeout,
+      clearTimeout: clear = clearTimeout,
+      now = Date.now,
+    } = {},
   ) {
     return async ({ user, offset, limit, origin, kind = "group" }) => {
       if (
@@ -230,20 +241,42 @@
         offset: String(offset),
       }).toString();
       const controller = new AbortController();
-      const timeout = delay(() => controller.abort(), 15000);
+      let timeout;
       try {
-        const response = await fetch(url.href, {
-          credentials: "omit",
-          signal: controller.signal,
-        });
-        if (!response.ok)
-          throw new Error(`SearchEncore HTTP ${response.status}`);
-        return normalizeBatch(await response.json(), {
-          offset,
-          limit,
-          origin,
-          kind,
-        });
+        return await Promise.race([
+          (async () => {
+            const response = await fetch(url.href, {
+              credentials: "omit",
+              signal: controller.signal,
+            });
+            if (response.status === 429) {
+              const value = response.headers?.get("Retry-After");
+              const seconds =
+                value != null && /^\d+(?:\.\d+)?$/.test(value.trim())
+                  ? Number(value.trim()) * 1000
+                  : NaN;
+              const date = value ? Date.parse(value) - now() : NaN;
+              const wait = Number.isFinite(seconds) ? seconds : date;
+              throw new RateLimitError(
+                now() + (Number.isFinite(wait) && wait >= 0 ? wait : 60000),
+              );
+            }
+            if (!response.ok)
+              throw new Error(`SearchEncore HTTP ${response.status}`);
+            return normalizeBatch(await response.json(), {
+              offset,
+              limit,
+              origin,
+              kind,
+            });
+          })(),
+          new Promise((_, reject) => {
+            timeout = delay(() => {
+              controller.abort();
+              reject(new Error("SearchEncore 请求超时，请重试"));
+            }, 15000);
+          }),
+        ]);
       } finally {
         clear(timeout);
       }
@@ -263,7 +296,7 @@
         : "无法确定当前页，请继续重试",
     );
 
-  function createTopicFeed(search, { user, origin }) {
+  function createTopicFeed(search, { user, origin, now = Date.now }) {
     const streams = Object.fromEntries(
       kinds.map((kind) => [
         kind,
@@ -278,7 +311,69 @@
       ]),
     );
     let received = 0;
+    let foreground = null;
+    let inFlight = 0;
+    let cooldown = 0;
+    let paused = false;
+    const queue = [];
+    const active = new Set();
+    let scheduled = false;
 
+    function setForeground(category) {
+      foreground = category;
+      schedule();
+    }
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        dispatch();
+      });
+    }
+    function dispatch() {
+      if (paused) return;
+      while (inFlight < 2 && queue.length) {
+        const front = queue.findIndex((job) => job.categories.has(foreground));
+        // A foreground target waiting for a response or its next request owns free slots.
+        if (
+          front < 0 &&
+          [...active].some((target) => target.category === foreground)
+        )
+          return;
+        const job = queue.splice(front < 0 ? 0 : front, 1)[0];
+        inFlight++;
+        search({
+          user,
+          origin,
+          kind: job.kind,
+          offset: job.offset,
+          limit: job.limit,
+        })
+          .then(job.resolve, (error) => {
+            if (error instanceof RateLimitError) {
+              paused = true;
+              cooldown = Math.max(cooldown, error.retryAfter);
+              for (const waiting of queue.splice(0)) waiting.reject(error);
+            }
+            job.reject(error);
+          })
+          .finally(() => {
+            inFlight--;
+            schedule();
+          });
+      }
+    }
+    function request(kind, offset, limit, category) {
+      const job = { kind, offset, limit, categories: new Set([category]) };
+      const promise = new Promise((resolve, reject) => {
+        job.resolve = resolve;
+        job.reject = reject;
+      });
+      streams[kind].pending = { promise, job };
+      schedule();
+      return streams[kind].pending;
+    }
     function candidates(category) {
       const view = views[category];
       const displayed = new Set([...view.pages.values()].flat());
@@ -304,48 +399,67 @@
       return result;
     }
 
-    // Each required stream supplies N effective candidates (including frozen entries),
-    // or proves natural exhaustion. Raw rows and globally cached keys are not a prefix.
     async function fill(category, count, target) {
       const required = category === "all" ? kinds : [category];
-      await Promise.all(
-        required.map(async (kind) => {
-          const stream = streams[kind];
-          while (true) {
-            const available = candidates(category).filter(
-              (t) => t.kind === kind,
-            ).length;
-            if (available >= count || stream.exhausted) return;
-            if (stream.offset > 5000) throw unavailable(stream);
-            if (!stream.pending && target.requests[kind] >= 3)
-              throw unavailable(stream);
-            if (!stream.pending) {
-              const offset = stream.offset;
-              const limit = Math.min(50, Math.max(1, count - available));
-              stream.pending = search({ user, origin, kind, offset, limit })
-                .then((batch) => {
-                  if (!Array.isArray(batch) || batch.length > limit)
-                    throw new Error("SearchEncore 返回格式无效");
-                  // A successful batch is accepted atomically by the adapter.
-                  for (const item of batch) {
-                    if (!known.has(item.key)) {
-                      item.received = received++;
-                      known.set(item.key, item);
-                      stream.rows.push(item);
-                    }
-                  }
-                  stream.offset += batch.length;
-                  if (!batch.length) stream.exhausted = true;
-                })
-                .finally(() => {
-                  stream.pending = null;
-                });
+      active.add(target);
+      try {
+        const outcomes = await Promise.allSettled(
+          required.map(async (kind) => {
+            const stream = streams[kind];
+            try {
+              while (true) {
+                if (target.blocked) throw target.blocked;
+                const available = candidates(category).filter(
+                  (t) => t.kind === kind,
+                ).length;
+                if (available >= count || stream.exhausted) return;
+                if (paused) throw new Error("请求已暂停，请稍后重试");
+                if (stream.offset > 5000 || target.requests[kind] >= 3)
+                  throw unavailable(stream);
+                let pending = stream.pending;
+                if (!pending) {
+                  const offset = stream.offset;
+                  const limit = Math.min(50, Math.max(1, count - available));
+                  pending = request(kind, offset, limit, category);
+                  queue.push(pending.job);
+                  schedule();
+                  // The cursor and cache update exactly once, regardless of how many targets await this job.
+                  pending.promise = pending.promise
+                    .then((batch) => {
+                      if (!Array.isArray(batch) || batch.length > limit)
+                        throw new Error("SearchEncore 返回格式无效");
+                      for (const item of batch) {
+                        if (!known.has(item.key)) {
+                          item.received = received++;
+                          known.set(item.key, item);
+                          stream.rows.push(item);
+                        }
+                      }
+                      stream.offset += batch.length;
+                      if (!batch.length) stream.exhausted = true;
+                    })
+                    .finally(() => {
+                      if (stream.pending === pending) stream.pending = null;
+                    });
+                }
+                pending.job.categories.add(category);
+                target.requests[kind]++;
+                await pending.promise;
+              }
+            } catch (error) {
+              target.blocked ||= error;
+              throw error;
             }
-            target.requests[kind]++;
-            await stream.pending;
-          }
-        }),
-      );
+          }),
+        );
+        const failed = outcomes.find(
+          (outcome) => outcome.status === "rejected",
+        );
+        if (failed) throw failed.reason;
+      } finally {
+        active.delete(target);
+        schedule();
+      }
     }
 
     async function prepare(category, page, retry = false) {
@@ -354,57 +468,94 @@
         throw new Error("无效分类或页码");
       const id = String(page);
       let target = view.targets.get(id);
-      if (!target || retry) {
-        target = { requests: { group: 0, subject: 0 }, failure: null };
+      if (!target) {
+        target = {
+          category,
+          requests: { group: 0, subject: 0 },
+          failure: null,
+          blocked: null,
+          pending: null,
+        };
         view.targets.set(id, target);
       }
-      if (view.pages.has(page) && !retry) {
-        const entries = candidates(category);
+      if (target.pending) return target.pending;
+      if (retry) {
+        if (paused && now() < cooldown)
+          return { error: new Error("请求冷却中，请稍后重试") };
+        paused = false;
+        target.requests = { group: 0, subject: 0 };
+        target.failure = null;
+        target.blocked = null;
+        schedule();
+      }
+      const work = async () => {
+        if (view.pages.has(page) && !retry) {
+          const entries = candidates(category);
+          return {
+            items: view.pages.get(page).map((key) => known.get(key)),
+            next:
+              entries.length > page * 10
+                ? "yes"
+                : (category === "all" ? kinds : [category]).every(
+                      (k) => streams[k].exhausted,
+                    )
+                  ? "no"
+                  : "unknown",
+          };
+        }
+        if (target.failure) return { error: target.failure };
+        const goal = page * 10;
+        let problem = null;
+        try {
+          const cached = candidates(category);
+          const required = category === "all" ? kinds : [category];
+          if (
+            !required.every(
+              (kind) =>
+                streams[kind].exhausted ||
+                cached.filter((item) => item.kind === kind).length >= goal + 1,
+            )
+          ) {
+            if (paused) throw new Error("请求已暂停，请稍后重试");
+            await fill(category, goal + 1, target);
+          }
+        } catch (error) {
+          problem = error;
+        }
+        let entries = candidates(category);
+        const required = category === "all" ? kinds : [category];
+        const exhausted = () => required.every((k) => streams[k].exhausted);
+        const reliable = (count) =>
+          required.every(
+            (k) =>
+              streams[k].exhausted ||
+              entries.filter((t) => t.kind === k).length >= count,
+          );
+        const start = (page - 1) * 10;
+        if (!reliable(goal)) {
+          target.failure =
+            problem ||
+            unavailable(streams[category === "all" ? "group" : category]);
+          return { error: target.failure };
+        }
+        if (entries.length <= start) return { items: [], next: "no" };
+        const keys = entries.slice(start, goal).map((t) => t.key);
+        entries = candidates(category);
         return {
-          items: view.pages.get(page).map((key) => known.get(key)),
+          items: (view.pages.get(page) || keys).map((key) => known.get(key)),
           next:
-            entries.length > page * 10
+            reliable(goal + 1) && entries.length > goal
               ? "yes"
-              : (category === "all" ? kinds : [category]).every(
-                    (k) => streams[k].exhausted,
-                  )
+              : exhausted()
                 ? "no"
                 : "unknown",
+          warning: problem,
         };
-      }
-      if (target.failure && !retry) return { error: target.failure };
-      const goal = page * 10;
-      let problem = null;
-      try {
-        await fill(category, goal + 1, target);
-      } catch (error) {
-        problem = error;
-      }
-      let entries = candidates(category);
-      const required = category === "all" ? kinds : [category];
-      const exhausted = () => required.every((k) => streams[k].exhausted);
-      const reliable = (count) =>
-        required.every(
-          (k) =>
-            streams[k].exhausted ||
-            entries.filter((t) => t.kind === k).length >= count,
-        );
-      const start = (page - 1) * 10;
-      if (!reliable(goal)) {
-        target.failure =
-          problem ||
-          unavailable(streams[category === "all" ? "group" : category]);
-        return { error: target.failure };
-      }
-      if (entries.length <= start) return { items: [], next: "no" };
-      // Freeze only the displayed page, never the lookahead candidate.
-      const keys = entries.slice(start, goal).map((t) => t.key);
-      entries = candidates(category);
-      return {
-        items: (view.pages.get(page) || keys).map((key) => known.get(key)),
-        next: entries.length > goal ? "yes" : exhausted() ? "no" : "unknown",
-        warning: problem,
       };
+      target.pending = work().finally(() => {
+        target.pending = null;
+      });
+      return target.pending;
     }
     function commit(category, page, items) {
       const view = views[category];
@@ -414,7 +565,7 @@
           items.map((topic) => topic.key),
         );
     }
-    return { prepare, commit };
+    return { prepare, commit, setForeground };
   }
 
   function el(document, tag, className, text) {
@@ -546,14 +697,29 @@
     const feed = createTopicFeed(createSearchEncore(fetch, timers), {
       user: host.user,
       origin: window.location.origin,
+      now: timers?.now,
     });
     const states = Object.fromEntries(
       Object.keys(categories).map((hash) => [
         categories[hash],
-        { page: 1, current: { loading: false }, pending: null },
+        {
+          page: 1,
+          current: { loading: false },
+          pending: null,
+          ready: null,
+          started: false,
+          target: 1,
+        },
       ]),
     );
     let explicitNavigation = false;
+    function scrollTitle() {
+      const title = document.querySelector(
+        "[data-user-topics-view] > h2.title",
+      );
+      if (title)
+        window.scrollTo(0, title.getBoundingClientRect().top + window.scrollY);
+    }
     anchor.addEventListener("click", (event) => {
       if (
         event.button === 0 &&
@@ -562,13 +728,13 @@
         !event.shiftKey &&
         !event.altKey
       ) {
-        explicitNavigation = true;
-        // A same-hash click keeps the already active category; hashchange handles new hashes.
+        explicitNavigation = window.location.hash !== "#posts";
+        if (!explicitNavigation && visible) scrollTitle();
       }
     });
     let visible = false,
       category = null,
-      generation = 0;
+      routeVersion = 0;
     const mounted = () =>
       host.columns.isConnected &&
       host.footer.parentElement === host.columns.parentElement &&
@@ -589,11 +755,53 @@
             load(category, state.current.target || state.page, true),
         });
     }
+    function publish(filter) {
+      const state = states[filter];
+      if (!state.ready || !visible || category !== filter || !mounted()) return;
+      const { target, result, scroll, version } = state.ready;
+      state.ready = null;
+      const previousPage = state.page;
+      if (result.error)
+        state.current = {
+          ...state.current,
+          loading: false,
+          error: result.error,
+          target,
+        };
+      else if (result.items.length) {
+        feed.commit(filter, target, result.items);
+        state.page = target;
+        state.current = { ...result, loading: false };
+      } else
+        state.current = {
+          ...state.current,
+          loading: false,
+          next: "no",
+          error: null,
+        };
+      paint();
+      if (
+        scroll &&
+        version === routeVersion &&
+        target !== previousPage &&
+        state.page === target
+      ) {
+        const root = document.querySelector(
+          "[data-user-topics-view] .entry-list",
+        );
+        if (root)
+          window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+      }
+    }
     async function load(filter, target, retry = false) {
       if (!visible || category !== filter || !mounted()) return;
       const state = states[filter];
       if (state.pending) return;
-      const token = generation;
+      state.started = true;
+      state.target = target;
+      state.ready = null;
+      const scroll = target !== state.page;
+      const version = routeVersion;
       state.current = {
         ...state.current,
         loading: true,
@@ -610,37 +818,10 @@
       } catch (error) {
         result = { error };
       }
+      if (state.pending !== job) return;
       state.pending = null;
-      if (
-        token !== generation ||
-        !visible ||
-        category !== filter ||
-        !mounted()
-      ) {
-        state.current = { ...state.current, loading: false };
-        if (visible && category === filter && mounted())
-          load(filter, states[filter].page);
-        return;
-      }
-      const previousPage = state.page;
-      if (result.error)
-        state.current = {
-          ...state.current,
-          loading: false,
-          error: result.error,
-          target,
-        };
-      else if (result.items.length) {
-        feed.commit(filter, target, result.items);
-        state.page = target;
-        state.current = { ...result, loading: false };
-      } else state.current = { ...state.current, loading: false, next: "no" };
-      paint();
-      if (target !== previousPage && state.page === target) {
-        const root = document.querySelector("[data-user-topics-view]");
-        if (root)
-          window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
-      }
+      state.ready = { target, result, scroll, version };
+      publish(filter);
     }
     function route() {
       const next = categories[window.location.hash];
@@ -652,9 +833,10 @@
       ) {
         explicitNavigation = false;
         if (visible) {
-          generation++;
+          routeVersion++;
           visible = false;
           category = null;
+          feed.setForeground(null);
           anchor.classList.remove("focus");
           view.hide();
         }
@@ -664,18 +846,38 @@
         explicitNavigation = false;
         return;
       }
-      const switched = visible;
-      generation++;
+      routeVersion++;
       visible = true;
       category = next;
+      feed.setForeground(next);
       const root = view.show();
+      if (!root.dataset.userTopicsNavReady) {
+        root.dataset.userTopicsNavReady = "";
+        root.addEventListener("click", (event) => {
+          const link = event.target.closest(".navSubTabs a[href]");
+          if (
+            !link ||
+            !root.contains(link) ||
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+          )
+            return;
+          explicitNavigation = link.hash !== window.location.hash;
+          if (!explicitNavigation) scrollTitle();
+        });
+      }
       anchor.classList.add("focus");
       paint();
-      if (explicitNavigation)
-        window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+      if (explicitNavigation) scrollTitle();
       explicitNavigation = false;
-      if (!states[next].current.items || switched) {
-        if (!states[next].pending) load(next, states[next].page);
+      if (states[next].ready) publish(next);
+      else if (!states[next].started) load(next, states[next].page);
+      else if (states[next].pending) {
+        states[next].current = { ...states[next].current, loading: true };
+        paint();
       }
     }
     const observer = new window.MutationObserver(() => {

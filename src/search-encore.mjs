@@ -51,9 +51,20 @@ export function normalizeBatch(
   return topics;
 }
 
+export class RateLimitError extends Error {
+  constructor(retryAfter) {
+    super("SearchEncore 请求过于频繁，请稍后重试");
+    this.retryAfter = retryAfter;
+  }
+}
+
 export function createSearchEncore(
   fetch,
-  { setTimeout: delay = setTimeout, clearTimeout: clear = clearTimeout } = {},
+  {
+    setTimeout: delay = setTimeout,
+    clearTimeout: clear = clearTimeout,
+    now = Date.now,
+  } = {},
 ) {
   return async ({ user, offset, limit, origin, kind = "group" }) => {
     if (
@@ -74,19 +85,42 @@ export function createSearchEncore(
       offset: String(offset),
     }).toString();
     const controller = new AbortController();
-    const timeout = delay(() => controller.abort(), 15000);
+    let timeout;
     try {
-      const response = await fetch(url.href, {
-        credentials: "omit",
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`SearchEncore HTTP ${response.status}`);
-      return normalizeBatch(await response.json(), {
-        offset,
-        limit,
-        origin,
-        kind,
-      });
+      return await Promise.race([
+        (async () => {
+          const response = await fetch(url.href, {
+            credentials: "omit",
+            signal: controller.signal,
+          });
+          if (response.status === 429) {
+            const value = response.headers?.get("Retry-After");
+            const seconds =
+              value != null && /^\d+(?:\.\d+)?$/.test(value.trim())
+                ? Number(value.trim()) * 1000
+                : NaN;
+            const date = value ? Date.parse(value) - now() : NaN;
+            const wait = Number.isFinite(seconds) ? seconds : date;
+            throw new RateLimitError(
+              now() + (Number.isFinite(wait) && wait >= 0 ? wait : 60000),
+            );
+          }
+          if (!response.ok)
+            throw new Error(`SearchEncore HTTP ${response.status}`);
+          return normalizeBatch(await response.json(), {
+            offset,
+            limit,
+            origin,
+            kind,
+          });
+        })(),
+        new Promise((_, reject) => {
+          timeout = delay(() => {
+            controller.abort();
+            reject(new Error("SearchEncore 请求超时，请重试"));
+          }, 15000);
+        }),
+      ]);
     } finally {
       clear(timeout);
     }

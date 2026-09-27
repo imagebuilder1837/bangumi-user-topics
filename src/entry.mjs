@@ -33,14 +33,27 @@ export function start(
   const feed = createTopicFeed(createSearchEncore(fetch, timers), {
     user: host.user,
     origin: window.location.origin,
+    now: timers?.now,
   });
   const states = Object.fromEntries(
     Object.keys(categories).map((hash) => [
       categories[hash],
-      { page: 1, current: { loading: false }, pending: null },
+      {
+        page: 1,
+        current: { loading: false },
+        pending: null,
+        ready: null,
+        started: false,
+        target: 1,
+      },
     ]),
   );
   let explicitNavigation = false;
+  function scrollTitle() {
+    const title = document.querySelector("[data-user-topics-view] > h2.title");
+    if (title)
+      window.scrollTo(0, title.getBoundingClientRect().top + window.scrollY);
+  }
   anchor.addEventListener("click", (event) => {
     if (
       event.button === 0 &&
@@ -49,13 +62,13 @@ export function start(
       !event.shiftKey &&
       !event.altKey
     ) {
-      explicitNavigation = true;
-      // A same-hash click keeps the already active category; hashchange handles new hashes.
+      explicitNavigation = window.location.hash !== "#posts";
+      if (!explicitNavigation && visible) scrollTitle();
     }
   });
   let visible = false,
     category = null,
-    generation = 0;
+    routeVersion = 0;
   const mounted = () =>
     host.columns.isConnected &&
     host.footer.parentElement === host.columns.parentElement &&
@@ -75,11 +88,53 @@ export function start(
         onRetry: () => load(category, state.current.target || state.page, true),
       });
   }
+  function publish(filter) {
+    const state = states[filter];
+    if (!state.ready || !visible || category !== filter || !mounted()) return;
+    const { target, result, scroll, version } = state.ready;
+    state.ready = null;
+    const previousPage = state.page;
+    if (result.error)
+      state.current = {
+        ...state.current,
+        loading: false,
+        error: result.error,
+        target,
+      };
+    else if (result.items.length) {
+      feed.commit(filter, target, result.items);
+      state.page = target;
+      state.current = { ...result, loading: false };
+    } else
+      state.current = {
+        ...state.current,
+        loading: false,
+        next: "no",
+        error: null,
+      };
+    paint();
+    if (
+      scroll &&
+      version === routeVersion &&
+      target !== previousPage &&
+      state.page === target
+    ) {
+      const root = document.querySelector(
+        "[data-user-topics-view] .entry-list",
+      );
+      if (root)
+        window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+    }
+  }
   async function load(filter, target, retry = false) {
     if (!visible || category !== filter || !mounted()) return;
     const state = states[filter];
     if (state.pending) return;
-    const token = generation;
+    state.started = true;
+    state.target = target;
+    state.ready = null;
+    const scroll = target !== state.page;
+    const version = routeVersion;
     state.current = {
       ...state.current,
       loading: true,
@@ -96,32 +151,10 @@ export function start(
     } catch (error) {
       result = { error };
     }
+    if (state.pending !== job) return;
     state.pending = null;
-    if (token !== generation || !visible || category !== filter || !mounted()) {
-      state.current = { ...state.current, loading: false };
-      if (visible && category === filter && mounted())
-        load(filter, states[filter].page);
-      return;
-    }
-    const previousPage = state.page;
-    if (result.error)
-      state.current = {
-        ...state.current,
-        loading: false,
-        error: result.error,
-        target,
-      };
-    else if (result.items.length) {
-      feed.commit(filter, target, result.items);
-      state.page = target;
-      state.current = { ...result, loading: false };
-    } else state.current = { ...state.current, loading: false, next: "no" };
-    paint();
-    if (target !== previousPage && state.page === target) {
-      const root = document.querySelector("[data-user-topics-view]");
-      if (root)
-        window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
-    }
+    state.ready = { target, result, scroll, version };
+    publish(filter);
   }
   function route() {
     const next = categories[window.location.hash];
@@ -133,9 +166,10 @@ export function start(
     ) {
       explicitNavigation = false;
       if (visible) {
-        generation++;
+        routeVersion++;
         visible = false;
         category = null;
+        feed.setForeground(null);
         anchor.classList.remove("focus");
         view.hide();
       }
@@ -145,18 +179,38 @@ export function start(
       explicitNavigation = false;
       return;
     }
-    const switched = visible;
-    generation++;
+    routeVersion++;
     visible = true;
     category = next;
+    feed.setForeground(next);
     const root = view.show();
+    if (!root.dataset.userTopicsNavReady) {
+      root.dataset.userTopicsNavReady = "";
+      root.addEventListener("click", (event) => {
+        const link = event.target.closest(".navSubTabs a[href]");
+        if (
+          !link ||
+          !root.contains(link) ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        explicitNavigation = link.hash !== window.location.hash;
+        if (!explicitNavigation) scrollTitle();
+      });
+    }
     anchor.classList.add("focus");
     paint();
-    if (explicitNavigation)
-      window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+    if (explicitNavigation) scrollTitle();
     explicitNavigation = false;
-    if (!states[next].current.items || switched) {
-      if (!states[next].pending) load(next, states[next].page);
+    if (states[next].ready) publish(next);
+    else if (!states[next].started) load(next, states[next].page);
+    else if (states[next].pending) {
+      states[next].current = { ...states[next].current, loading: true };
+      paint();
     }
   }
   const observer = new window.MutationObserver(() => {
