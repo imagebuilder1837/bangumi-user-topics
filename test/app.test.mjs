@@ -93,7 +93,7 @@ test("direct hash opens a sibling view and restores host nodes on exit", async (
   assert.equal(app.requests.length, 1);
   assert.equal(app.requests[0].request.searchParams.get("q"), "user:sai");
   assert.equal(app.requests[0].init.credentials, "omit");
-  assert.equal(columns.style.display, "none");
+  assert.equal(app.window.getComputedStyle(columns).display, "none");
   assert.equal(blog.classList.contains("focus"), false);
   assert.equal(columns.nextElementSibling.dataset.userTopicsView, "");
   assert.equal(
@@ -310,6 +310,34 @@ test("removing the host structure while active restores the remaining host state
   await tick();
   assert.equal(columns.style.display, "");
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  app.dom.window.close();
+});
+
+test("external display and active marker updates are not overwritten on exit", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+  const columns = app.document.querySelector(".columns");
+  columns.style.display = "grid";
+  const wrapper = app.document.querySelector("#wrapperNeue");
+  wrapper.dataset.userTopicsActive = "external";
+  await tick();
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(columns.style.display, "grid");
+  assert.equal(wrapper.dataset.userTopicsActive, "external");
+  assert.equal(app.document.querySelector("[data-user-topics-style]"), null);
+  app.dom.window.close();
+});
+
+test("rejects a foreign-origin blog anchor even if its path resembles the target user", () => {
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    markup: html.replace(
+      'href="/user/sai/blog"',
+      'href="https://evil.example/user/sai/blog"',
+    ),
+  });
+  assert.equal(app.document.querySelector("[data-user-topics-link]"), null);
+  assert.equal(app.requests.length, 0);
   app.dom.window.close();
 });
 

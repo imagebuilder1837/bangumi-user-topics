@@ -3,11 +3,11 @@
   "use strict";
 
   const css = `
-[data-user-topics-active] > .mainWrapper > .columns,
-[data-user-topics-active] #headerProfile .navSubTabsWrapper { display: none !important; }
-[data-user-topics-active] { min-width: 0 !important; }
-[data-user-topics-active] > .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
-[data-user-topics-active] #headerNeue2 { min-width: 0 !important; }
+[data-user-topics-active="on"] > #headerProfile + .mainWrapper > .columns,
+[data-user-topics-active="on"] > #headerProfile .navSubTabsWrapper { display: none !important; }
+[data-user-topics-active="on"] { min-width: 0 !important; }
+[data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
+[data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
 [data-user-topics-view] { max-width: 750px; margin: 0 auto; min-height: 200px; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
@@ -25,6 +25,7 @@
       (li) =>
         li.tagName === "LI" &&
         li.firstElementChild?.matches("a[href]") &&
+        new URL(li.firstElementChild.href).origin === location.origin &&
         /^\/user\/[^/]+\/blog\/?$/.test(
           new URL(li.firstElementChild.href).pathname,
         ),
@@ -76,23 +77,31 @@
     const style = document.createElement("style");
     style.dataset.userTopicsStyle = "";
     style.textContent = css;
-    document.head.append(style);
     let root = null,
       focus = null,
-      previousDisplay = null,
       previousScroll = null,
-      previousFocus = null;
+      previousFocus = null,
+      previousMarker = null,
+      markerOwned = false;
+    const markerObserver = new window.MutationObserver(() => {
+      markerOwned = false;
+    });
     function show() {
       if (root) return root;
       previousScroll = window.scrollY;
       previousFocus = host.columns.contains(document.activeElement)
         ? document.activeElement
         : null;
-      previousDisplay = host.columns.style.display;
-      host.columns.style.display = "none";
       focus = host.nav.querySelector(":scope > li > a.focus");
       if (focus) focus.classList.remove("focus");
-      host.wrapper.dataset.userTopicsActive = "";
+      previousMarker = host.wrapper.getAttribute("data-user-topics-active");
+      host.wrapper.dataset.userTopicsActive = "on";
+      markerOwned = true;
+      markerObserver.observe(host.wrapper, {
+        attributes: true,
+        attributeFilter: ["data-user-topics-active"],
+      });
+      document.head.append(style);
       root = document.createElement("section");
       root.dataset.userTopicsView = "";
       host.footer.before(root);
@@ -107,16 +116,22 @@
         active === host.nav.querySelector("[data-user-topics-link] a");
       root.remove();
       root = null;
-      if (host.columns.style.display === "none")
-        host.columns.style.display = previousDisplay;
+      if (markerObserver.takeRecords().length) markerOwned = false;
+      markerObserver.disconnect();
+      style.remove();
       if (
         focus &&
         focus.isConnected &&
         !host.nav.querySelector(":scope > li > a.focus")
       )
         focus.classList.add("focus");
-      if (host.wrapper.hasAttribute("data-user-topics-active"))
-        delete host.wrapper.dataset.userTopicsActive;
+      if (markerOwned && host.wrapper.dataset.userTopicsActive === "on") {
+        if (previousMarker === null)
+          delete host.wrapper.dataset.userTopicsActive;
+        else
+          host.wrapper.setAttribute("data-user-topics-active", previousMarker);
+      }
+      markerOwned = false;
       if (
         releaseFocus &&
         previousFocus?.isConnected &&
