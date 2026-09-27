@@ -80,10 +80,14 @@
     let root = null,
       focus = null,
       previousDisplay = null,
-      previousScroll = null;
+      previousScroll = null,
+      previousFocus = null;
     function show() {
       if (root) return root;
       previousScroll = window.scrollY;
+      previousFocus = host.columns.contains(document.activeElement)
+        ? document.activeElement
+        : null;
       previousDisplay = host.columns.style.display;
       host.columns.style.display = "none";
       focus = host.nav.querySelector(":scope > li > a.focus");
@@ -96,6 +100,11 @@
     }
     function hide() {
       if (!root) return;
+      const active = document.activeElement;
+      const releaseFocus =
+        active === document.body ||
+        root.contains(active) ||
+        active === host.nav.querySelector("[data-user-topics-link] a");
       root.remove();
       root = null;
       if (host.columns.style.display === "none")
@@ -108,6 +117,13 @@
         focus.classList.add("focus");
       if (host.wrapper.hasAttribute("data-user-topics-active"))
         delete host.wrapper.dataset.userTopicsActive;
+      if (
+        releaseFocus &&
+        previousFocus?.isConnected &&
+        host.columns.contains(previousFocus)
+      )
+        previousFocus.focus();
+      previousFocus = null;
       const hash = window.location.hash.slice(1);
       const nativeAnchor = hash && document.getElementById(hash);
       if (

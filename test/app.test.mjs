@@ -111,6 +111,26 @@ test("direct hash opens a sibling view and restores host nodes on exit", async (
   app.dom.window.close();
 });
 
+test("restores previous host focus only when another control has not taken it", async () => {
+  const app = setup();
+  const input = app.document.querySelector(".columns input");
+  input.focus();
+  enter(app);
+  await tick();
+  input.blur(); // Simulate browser blur when an ancestor is hidden.
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(app.document.activeElement, input);
+  enter(app);
+  await tick();
+  const nav = app.document.querySelector('.navTabs a[href="/user/sai/index"]');
+  nav.focus();
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(app.document.activeElement, nav);
+  app.dom.window.close();
+});
+
 test("eleventh hit is cached for next page, with safe text, timestamp and correct parent link", async () => {
   const app = setup({
     respond: (offset, limit) =>
