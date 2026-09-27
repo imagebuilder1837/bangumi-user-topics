@@ -1,7 +1,7 @@
 import { inspectHost, createHostView } from "./host-view.mjs";
 import { createSearchEncore } from "./search-encore.mjs";
 import { createTopicFeed } from "./topic-feed.mjs";
-import { renderPosts } from "./posts-view.mjs";
+import { renderPosts, renderPostsNav } from "./posts-view.mjs";
 
 const categories = {
   "#posts": "all",
@@ -77,6 +77,8 @@ export function start(
     if (!visible) return;
     const root = document.querySelector("[data-user-topics-view]");
     const state = states[category];
+    const subnav = document.querySelector("[data-user-topics-subnav]");
+    if (subnav) renderPostsNav(subnav, category);
     if (root)
       renderPosts(root, {
         nickname: host.nickname,
@@ -183,14 +185,14 @@ export function start(
     visible = true;
     category = next;
     feed.setForeground(next);
-    const root = view.show();
-    if (!root.dataset.userTopicsNavReady) {
-      root.dataset.userTopicsNavReady = "";
-      root.addEventListener("click", (event) => {
+    const { subnav } = view.show();
+    if (!subnav.dataset.userTopicsNavReady) {
+      subnav.dataset.userTopicsNavReady = "";
+      subnav.addEventListener("click", (event) => {
         const link = event.target.closest(".navSubTabs a[href]");
         if (
           !link ||
-          !root.contains(link) ||
+          !subnav.contains(link) ||
           event.button !== 0 ||
           event.metaKey ||
           event.ctrlKey ||

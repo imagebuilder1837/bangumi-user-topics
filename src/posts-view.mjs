@@ -4,15 +4,9 @@ function el(document, tag, className, text) {
   if (text != null) node.textContent = text;
   return node;
 }
-export function renderPosts(
-  root,
-  { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
-) {
-  const d = root.ownerDocument;
-  root.replaceChildren();
-  const title = el(d, "h2", "title", `${nickname}的帖子`);
-  root.append(title);
-  const tabs = el(d, "div", "navSubTabsWrapper");
+export function renderPostsNav(tabs, category) {
+  const d = tabs.ownerDocument;
+  tabs.replaceChildren();
   const nav = el(d, "ul", "navSubTabs");
   for (const [filter, label, hash] of [
     ["all", "全部帖子", "#posts"],
@@ -26,7 +20,15 @@ export function renderPosts(
     nav.append(li);
   }
   tabs.append(nav);
-  root.append(tabs);
+}
+export function renderPosts(
+  root,
+  { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
+) {
+  const d = root.ownerDocument;
+  root.replaceChildren();
+  const title = el(d, "h2", "title", `${nickname}的帖子`);
+  root.append(title);
   const status = el(d, "div", "grey");
   status.setAttribute("role", "status");
   root.append(status);

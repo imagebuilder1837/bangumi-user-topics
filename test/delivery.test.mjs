@@ -29,6 +29,67 @@ test("development bundle initializes against a real blog structure without metad
   dom.window.close();
 });
 
+test("development bundle handles another host, both streams, category navigation and exit", async () => {
+  const friend = html.replace(
+    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
+    '<div class="columns clearit"><div id="columnUserSingle" class="column"><ul id="memberUserList"><li>好友</li></ul></div></div>',
+  );
+  const dom = new JSDOM(friend, {
+    url: "https://chii.in/user/sai/friends#posts",
+    runScripts: "outside-only",
+  });
+  dom.window.scrollTo = () => {};
+  const requests = [];
+  dom.window.fetch = async (url, init) => {
+    const u = new URL(url);
+    requests.push({
+      kind: u.pathname.endsWith("group-topics") ? "group" : "subject",
+      credentials: init.credentials,
+    });
+    return {
+      ok: true,
+      json: async () => ({
+        data: [],
+        pagination: {
+          total: 0,
+          offset: Number(u.searchParams.get("offset")),
+          limit: Number(u.searchParams.get("limit")),
+          totalIsEstimate: false,
+        },
+        meta: {},
+      }),
+    };
+  };
+  const columns = dom.window.document.querySelector(".columns");
+  dom.window.eval(bundle);
+  for (let i = 0; i < 4; i++)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(requests, [
+    { kind: "group", credentials: "omit" },
+    { kind: "subject", credentials: "omit" },
+  ]);
+  assert.equal(
+    dom.window.document.querySelectorAll("[data-user-topics-subnav] a").length,
+    3,
+  );
+  dom.window.location.hash = "#posts/group";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  for (let i = 0; i < 4; i++)
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    dom.window.document.querySelector("[data-user-topics-subnav] a.focus").hash,
+    "#posts/group",
+  );
+  dom.window.location.hash = "#elsewhere";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  assert.equal(dom.window.document.querySelector(".columns"), columns);
+  assert.equal(
+    dom.window.document.querySelector("[data-user-topics-view]"),
+    null,
+  );
+  dom.window.close();
+});
+
 test("development bundle completes the group reading and pagination journey", async () => {
   const dom = new JSDOM(html, {
     url: "https://bgm.tv/user/sai/blog",
