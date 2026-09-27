@@ -1,0 +1,17 @@
+{
+  "name": "bangumi-user-topics",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "format": "prettier --write src/*.mjs scripts/*.mjs test/*.mjs",
+    "format:check": "prettier --check src/*.mjs scripts/*.mjs test/*.mjs src/index.user.js",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^20.0.3",
+    "prettier": "3.6.2",
+    "rollup": "4.60.0"
+  }
+}
