@@ -127,7 +127,7 @@ export function start(
         state: state.current,
         page: state.page,
         confirmedPage: state.confirmedPage,
-        onPage: (target) => load(category, target, false, false),
+        onPage: (target) => load(category, target),
         onNext: () => load(category, state.page + 1),
         onPrevious: () => load(category, state.page - 1),
         onRetry: () => load(category, state.current.target || state.page, true),
@@ -175,7 +175,7 @@ export function start(
       window.scrollTo(0, 0);
     }
   }
-  async function load(filter, target, retry = false, scrollOnSuccess = true) {
+  async function load(filter, target, retry = false) {
     if (!visible || category !== filter) return;
     if (!activeHostValid()) {
       route();
@@ -186,7 +186,7 @@ export function start(
     state.started = true;
     state.target = target;
     state.ready = null;
-    const scroll = !retry && scrollOnSuccess && target !== state.page;
+    const scroll = !retry && target !== state.page;
     const version = routeVersion;
     const epoch = takeoverEpoch;
     state.current = {

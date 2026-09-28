@@ -125,7 +125,7 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
   assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   const scrollsAfterArrows = app.scrolls.length;
   await jump(5);
-  assert.equal(app.scrolls.length, scrollsAfterArrows);
+  assert.deepEqual(app.scrolls.slice(scrollsAfterArrows), [[0, 0]]);
   assert.deepEqual(numbers(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(app.document.querySelector("[data-page]").textContent, "5");
   await jump(3);
@@ -134,6 +134,7 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
   assert.deepEqual(numbers(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   await jump(10);
   assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.equal(app.scrolls.length, scrollsAfterArrows + 4);
   app.dom.window.close();
 });
 
