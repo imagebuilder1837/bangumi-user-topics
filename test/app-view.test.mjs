@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
 
-test("eleventh hit is cached for next page, with safe text, timestamp and correct parent link", async () => {
+test("post metadata renders safely with native links and timestamps", async () => {
   const app = setup({
     respond: (offset, limit) =>
       envelope(
@@ -40,6 +40,21 @@ test("eleventh hit is cached for next page, with safe text, timestamp and correc
     app.document.querySelector(".entry-list .time").textContent,
     /2023-10-14/,
   );
+  app.dom.window.close();
+});
+
+test("one lookahead reveals the next page and confirmed numbers permit direct jumps", async () => {
+  const app = setup({
+    respond: (offset, limit) =>
+      envelope(
+        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        offset,
+        limit,
+      ),
+  });
+  enter(app);
+  await tick();
+  assert.equal(app.requests[0].request.searchParams.get("limit"), "11");
   const next = app.document.querySelector("[data-next]");
   assert.equal(next.textContent, "››");
   assert.equal(next.className, "p");
@@ -108,7 +123,9 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
     await tick();
   }
   assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  const scrollsAfterArrows = app.scrolls.length;
   await jump(5);
+  assert.equal(app.scrolls.length, scrollsAfterArrows);
   assert.deepEqual(numbers(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(app.document.querySelector("[data-page]").textContent, "5");
   await jump(3);
@@ -117,6 +134,43 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
   assert.deepEqual(numbers(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   await jump(10);
   assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  app.dom.window.close();
+});
+
+test("a confirmed page stays linked when its first load fails and can be retried", async () => {
+  let fail = true;
+  const app = setup({
+    respond: (offset, limit) => {
+      if (offset === 11 && fail) throw Error("temporary failure");
+      return envelope(
+        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        offset,
+        limit,
+      );
+    },
+  });
+  enter(app);
+  await tick();
+  app.document
+    .querySelector("[data-user-topics-view] [data-page-link='2']")
+    .click();
+  await tick();
+  assert.equal(app.document.querySelector("[data-page]").textContent, "1");
+  assert.equal(
+    app.document.querySelector("[data-user-topics-view] [data-page-link='2']")
+      .textContent,
+    "2",
+  );
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /temporary failure/,
+  );
+  assert.deepEqual(app.scrolls, []);
+  fail = false;
+  app.document.querySelector("[role=status] button").click();
+  await tick();
+  assert.equal(app.document.querySelector("[data-page]").textContent, "2");
+  assert.deepEqual(app.scrolls, []);
   app.dom.window.close();
 });
 

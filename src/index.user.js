@@ -795,10 +795,11 @@
     }
     if (state.items?.length) {
       const pages = el(d, "div", "page_inner");
+      const pageHref = category === "all" ? "#posts" : `#posts/${category}`;
       if (page > 1) {
         const previous = el(d, "a", "p", "‹‹");
         previous.setAttribute("aria-label", "上一页");
-        previous.href = category === "all" ? "#posts" : `#posts/${category}`;
+        previous.href = pageHref;
         if (state.loading) previous.setAttribute("aria-disabled", "true");
         previous.addEventListener("click", (event) => {
           event.preventDefault();
@@ -823,7 +824,7 @@
         }
         const link = el(d, "a", "p", String(number));
         link.dataset.pageLink = String(number);
-        link.href = category === "all" ? "#posts" : `#posts/${category}`;
+        link.href = pageHref;
         if (state.loading) link.setAttribute("aria-disabled", "true");
         link.addEventListener("click", (event) => {
           event.preventDefault();
@@ -838,7 +839,7 @@
           state.next === "unknown" ? "下一页（未确认）" : "下一页",
         );
         next.dataset.next = "";
-        next.href = category === "all" ? "#posts" : `#posts/${category}`;
+        next.href = pageHref;
         if (state.loading) next.setAttribute("aria-disabled", "true");
         next.addEventListener("click", (event) => {
           event.preventDefault();
@@ -975,7 +976,7 @@
           state: state.current,
           page: state.page,
           confirmedPage: state.confirmedPage,
-          onPage: (target) => load(category, target),
+          onPage: (target) => load(category, target, false, false),
           onNext: () => load(category, state.page + 1),
           onPrevious: () => load(category, state.page - 1),
           onRetry: () =>
@@ -1024,7 +1025,7 @@
         window.scrollTo(0, 0);
       }
     }
-    async function load(filter, target, retry = false) {
+    async function load(filter, target, retry = false, scrollOnSuccess = true) {
       if (!visible || category !== filter) return;
       if (!activeHostValid()) {
         route();
@@ -1035,7 +1036,7 @@
       state.started = true;
       state.target = target;
       state.ready = null;
-      const scroll = !retry && target !== state.page;
+      const scroll = !retry && scrollOnSuccess && target !== state.page;
       const version = routeVersion;
       const epoch = takeoverEpoch;
       state.current = {
