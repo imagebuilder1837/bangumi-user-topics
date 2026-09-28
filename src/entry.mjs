@@ -21,6 +21,9 @@ export function start(
     return;
   }
   const { document } = window;
+  const main = host.columns.parentElement;
+  const navWrapper = host.nav.parentElement;
+  const subjectNav = navWrapper.parentElement;
   if (host.nav.querySelector("[data-user-topics-link]")) return;
   const entry = document.createElement("li");
   entry.dataset.userTopicsLink = "";
@@ -73,17 +76,26 @@ export function start(
     routeVersion = 0,
     takeoverEpoch = 0;
   const mounted = () =>
-    host.columns.isConnected &&
+    host.wrapper.matches("#wrapperNeue") &&
+    host.profile.matches("#headerProfile") &&
+    host.profile.parentElement === host.wrapper &&
+    main.matches(".mainWrapper") &&
+    host.profile.nextElementSibling === main &&
+    host.columns.parentElement === main &&
     host.columns.classList.contains("columns") &&
-    host.profile.nextElementSibling === host.columns.parentElement &&
-    host.footer.parentElement === host.columns.parentElement &&
+    host.footer.matches("#footer") &&
+    host.footer.parentElement === main &&
     host.bodyEvidence.isConnected &&
     host.columns.contains(host.bodyEvidence) &&
     (!host.originalSub ||
       (host.originalSub.isConnected &&
-        host.originalSub.parentElement ===
-          host.nav.parentElement.parentElement)) &&
-    host.nav.isConnected;
+        host.originalSub.parentElement === subjectNav)) &&
+    subjectNav.matches(".subjectNav") &&
+    subjectNav.parentElement === host.profile &&
+    navWrapper.matches(".navTabsWrapper") &&
+    navWrapper.parentElement === subjectNav &&
+    host.nav.matches(".navTabs") &&
+    host.nav.parentElement === navWrapper;
   const activeHostValid = () =>
     mounted() &&
     host.wrapper.dataset.userTopicsActive === "on" &&
@@ -263,9 +275,34 @@ export function start(
     )
       route();
   });
-  observer.observe(host.columns.parentElement, { childList: true });
-  observer.observe(host.nav.parentElement, { childList: true });
-  observer.observe(host.profile.parentElement, { childList: true });
+  observer.observe(main, {
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class", "style"],
+  });
+  observer.observe(navWrapper, {
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  observer.observe(host.profile, {
+    childList: true,
+    attributes: true,
+    attributeFilter: ["id"],
+  });
+  observer.observe(subjectNav, {
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  observer.observe(host.nav, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  observer.observe(host.footer, {
+    attributes: true,
+    attributeFilter: ["id"],
+  });
   observer.observe(host.columns, {
     childList: true,
     subtree: true,
@@ -273,15 +310,15 @@ export function start(
     attributeFilter: ["class", "style"],
   });
   observer.observe(host.wrapper, {
+    childList: true,
     attributes: true,
-    attributeFilter: ["data-user-topics-active"],
+    attributeFilter: ["data-user-topics-active", "id"],
   });
   if (host.originalSub)
     observer.observe(host.originalSub, {
       attributes: true,
       attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
     });
-  observer.observe(host.nav.parentElement.parentElement, { childList: true });
   window.addEventListener("hashchange", () => route());
   route();
 }

@@ -913,6 +913,36 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
   app.dom.window.close();
 });
 
+test("losing a host CSS hook exits before the original content is exposed", async () => {
+  for (const [selector, attribute, value] of [
+    [".mainWrapper:has(> .columns)", "class", "not-mainWrapper"],
+    ["#headerProfile", "id", "not-headerProfile"],
+  ]) {
+    const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+    const columns = app.document.querySelector(".columns");
+    await tick();
+    assert.ok(app.document.querySelector("[data-user-topics-view]"));
+    app.document.querySelector(selector).setAttribute(attribute, value);
+    await tick();
+    assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+    assert.equal(columns.isConnected, true);
+    assert.equal(app.window.location.hash, "#posts/group");
+    app.dom.window.close();
+  }
+});
+
+test("moving the original primary navigation out of the profile ends takeover", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+  const nav = app.document.querySelector("#headerProfile .navTabs");
+  await tick();
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  app.document.body.append(nav);
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(nav.isConnected, true);
+  app.dom.window.close();
+});
+
 test("external display and active marker updates are not overwritten on exit", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
   const columns = app.document.querySelector(".columns");
