@@ -786,7 +786,8 @@
     if (state.items?.length) {
       const pages = el(d, "div", "page_inner");
       if (page > 1) {
-        const previous = el(d, "a", "p", "上一页");
+        const previous = el(d, "a", "p", "‹‹");
+        previous.setAttribute("aria-label", "上一页");
         previous.href = category === "all" ? "#posts" : `#posts/${category}`;
         if (state.loading) previous.setAttribute("aria-disabled", "true");
         previous.addEventListener("click", (event) => {
@@ -799,10 +800,9 @@
       current.dataset.page = "";
       pages.append(current);
       if (state.next !== "no") {
-        const next = el(
-          d,
-          "a",
-          "p",
+        const next = el(d, "a", "p", "››");
+        next.setAttribute(
+          "aria-label",
           state.next === "unknown" ? "下一页（未确认）" : "下一页",
         );
         next.dataset.next = "";

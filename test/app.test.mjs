@@ -456,8 +456,23 @@ test("eleventh hit is cached for next page, with safe text, timestamp and correc
     app.document.querySelector(".entry-list .time").textContent,
     /2023-10-14/,
   );
-  app.document.querySelector("[data-next]").click();
+  const next = app.document.querySelector("[data-next]");
+  assert.equal(next.textContent, "››");
+  assert.equal(next.className, "p");
+  assert.equal(next.getAttribute("aria-label"), "下一页");
+  assert.equal(
+    app.document.querySelector(
+      "[data-user-topics-view] .page_inner a.p:not([data-next])",
+    ),
+    null,
+  );
+  next.click();
   await tick();
+  const previous = app.document.querySelector(
+    "[data-user-topics-view] .page_inner a.p:not([data-next])",
+  );
+  assert.equal(previous.textContent, "‹‹");
+  assert.equal(previous.getAttribute("aria-label"), "上一页");
   assert.equal(app.requests[1].request.searchParams.get("offset"), "11");
   assert.equal(app.requests[1].request.searchParams.get("limit"), "10");
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
@@ -573,6 +588,11 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
   assert.match(
     app.document.querySelector("[role=status]").textContent,
     /无法确认是否还有下一页：temporary failure/,
+  );
+  assert.equal(app.document.querySelector("[data-next]").textContent, "››");
+  assert.equal(
+    app.document.querySelector("[data-next]").getAttribute("aria-label"),
+    "下一页（未确认）",
   );
   fail = false;
   app.document.querySelector("[role=status] button").click();
