@@ -913,6 +913,74 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
   app.dom.window.close();
 });
 
+test("a recovered host reentry on the same hash scrolls the title into view", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
+  const columns = app.document.querySelector(".columns");
+  await tick();
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  columns.classList.remove("columns");
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  columns.classList.add("columns");
+  const before = app.scrolls.length;
+  app.document.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  assert.ok(app.scrolls.length > before);
+  app.dom.window.close();
+});
+
+test("a still-broken host keeps the same-hash click suspended without scrolling", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
+  const columns = app.document.querySelector(".columns");
+  await tick();
+  columns.classList.remove("columns");
+  await tick();
+  const before = app.scrolls.length;
+  app.document.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.scrolls.length, before);
+  app.dom.window.close();
+});
+
+test("reentry after recovery repaints the cached page without new requests", async () => {
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts",
+    respond: (offset, limit, url) =>
+      envelope(
+        Array.from({ length: limit }, (_, i) => {
+          const group = url.pathname.endsWith("group-topics");
+          return hit(offset + i + 1, {
+            kind: group ? 0 : 1,
+            parentID: group ? 2 : 307,
+          });
+        }),
+        offset,
+        limit,
+      ),
+  });
+  await tick();
+  assert.equal(app.requests.length, 2);
+  app.document.querySelector("[data-next]").click();
+  await tick();
+  assert.equal(app.requests.length, 4);
+  assert.equal(app.document.querySelector("[data-page]").textContent, "2");
+  const columns = app.document.querySelector(".columns");
+  columns.classList.remove("columns");
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  columns.classList.add("columns");
+  const before = app.scrolls.length;
+  app.document.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  assert.equal(app.requests.length, 4);
+  assert.equal(app.document.querySelector("[data-page]").textContent, "2");
+  assert.ok(app.scrolls.length > before);
+  app.dom.window.close();
+});
+
 test("losing a host CSS hook exits before the original content is exposed", async () => {
   for (const [selector, attribute, value] of [
     [".mainWrapper:has(> .columns)", "class", "not-mainWrapper"],

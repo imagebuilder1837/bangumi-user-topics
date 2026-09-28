@@ -199,6 +199,8 @@ export function start(
     state.ready = { target, result, scroll, version };
     publish(filter);
   }
+  // explicit: the user reentered through an intact entry while suspended; an
+  // explicit entry must restore title visibility just like a fresh navigation.
   function route(explicit = false) {
     const next = categories[window.location.hash];
     const invalid = !mounted() || (visible && !activeHostValid());
@@ -255,7 +257,7 @@ export function start(
     }
     anchor.classList.add("focus");
     paint();
-    if (explicitNavigation) scrollTitle();
+    if (explicitNavigation || explicit) scrollTitle();
     explicitNavigation = false;
     if (states[next].ready) publish(next);
     else if (!states[next].started) load(next, states[next].page);
