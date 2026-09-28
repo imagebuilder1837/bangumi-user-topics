@@ -1,6 +1,6 @@
 # 维护源导航
 
-本仓库已有日志宿主页的三分类合并分页与异步调度；其它已观察宿主页的接入由 `host-view.mjs` 守卫。真实浏览器验收与 metadata 审批仍待完成。
+本仓库已有日志宿主页的三分类合并分页与异步调度；其它已观察宿主页的接入由 `host-view.mjs` 守卫。真实浏览器验收仍待完成；构建使用人工维护的 metadata 模板。
 
 行为变更从维护源开始，不要默认读取生成的 `src/index.user.js`。仅为构建排障、审查或最终 artifact 验收时定向检查生成文件。
 
@@ -15,8 +15,8 @@
 | 数据流、缓存与合并 | `src/topic-feed.mjs` | 双流原始 offset、共享内存去重、分类独立冻结与排除、充分前缀合并和一条前瞻 |
 | 帖子页与子导航 | `src/posts-view.mjs` | 渲染三分类导航、标题和状态 |
 | 列表与分页 | `src/posts-view.mjs` | 条目、metadata、加载/空/错误状态与分页交互 |
-| userscript metadata | 尚无 | 未获逐字段批准，不生成 metadata header；规则见 `docs/agents/metadata.md` |
-| 单文件交付 | `src/index.user.js` | build 生成的**开发态**单文件，不可当作可安装 userscript 发布 |
-| 构建与静态检查 | `scripts/build.mjs`、`scripts/check.mjs` | 生成开发态 bundle；check 统一运行 node --check、格式检查、artifact 一致性及完整测试 |
+| userscript metadata | `src/metadata.txt`、`package.json` | 人工维护字段；模板仅在构建时替换 `{{VERSION}}`；规则见 `docs/agents/metadata.md` |
+| 单文件交付 | `src/index.user.js` | build 生成的可安装单文件，不手工编辑 header |
+| 构建与静态检查 | `scripts/build.mjs`、`scripts/check.mjs` | 生成单文件；check 验证版本及模板、node --check、格式、artifact 一致性及完整测试 |
 
-测试按维护源的职责组织在 `test/`：`app.test.mjs` 通过应用入口验收 route、导航、宿主、adapter、feed 与 rendering；`hosts.test.mjs` 覆盖多宿主结构；`delivery.test.mjs` 验收开发态生成物。DOM 测试使用 jsdom；日志 fixture 在 `test/fixtures/`。
+测试按维护源的职责组织在 `test/`：`app.test.mjs` 通过应用入口验收 route、导航、宿主、adapter、feed 与 rendering；`hosts.test.mjs` 覆盖多宿主结构；`delivery.test.mjs` 验收可安装生成物。DOM 测试使用 jsdom；日志 fixture 在 `test/fixtures/`。

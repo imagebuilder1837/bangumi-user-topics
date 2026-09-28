@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { generate } from "./build.mjs";
+import { generate, metadataForVersion } from "./build.mjs";
 const root = new URL("../", import.meta.url);
 async function files(dir) {
   const entries = await readdir(new URL(dir, root), { withFileTypes: true });
@@ -22,9 +22,15 @@ const sources = [
 ];
 for (const file of sources) run(process.execPath, ["--check", file]);
 run("npm", ["run", "format:check"]);
-if (
-  (await readFile(new URL("src/index.user.js", root), "utf8")) !==
-  (await generate())
-)
-  throw new Error("Development bundle stale");
+const { version, header } = await metadataForVersion();
+const lock = JSON.parse(
+  await readFile(new URL("package-lock.json", root), "utf8"),
+);
+if (lock.version !== version || lock.packages?.[""].version !== version)
+  throw new Error("package.json and lockfile project versions differ");
+const actual = await readFile(new URL("src/index.user.js", root), "utf8");
+if (!actual.startsWith(`${header}\n\n`) || actual !== (await generate()))
+  throw new Error(
+    "Generated userscript metadata or bundle stale; run npm run build",
+  );
 run("npm", ["run", "test"]);

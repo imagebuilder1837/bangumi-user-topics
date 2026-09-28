@@ -10,10 +10,34 @@ const bundle = readFileSync(
   new URL("../src/index.user.js", import.meta.url),
   "utf8",
 );
+const template = readFileSync(
+  new URL("../src/metadata.txt", import.meta.url),
+  "utf8",
+);
+const { version } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
+const lock = JSON.parse(
+  readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"),
+);
 
-test("development bundle initializes against a real blog structure without metadata or imports", () => {
-  assert.match(bundle, /Development bundle only/);
-  assert.doesNotMatch(bundle, /==UserScript==|\bimport\s+.*from/);
+test("installable bundle carries the exact human-maintained header and no development imports", () => {
+  const header = template.replace("{{VERSION}}", version).trimEnd();
+  assert.ok(bundle.startsWith(`${header}\n\n`));
+  assert.equal((bundle.match(/==UserScript==/g) || []).length, 1);
+  assert.doesNotMatch(
+    bundle,
+    /Development bundle only|^\s*(?:import|export)\s|\bmodule\.exports\b|sourceMappingURL/m,
+  );
+  assert.equal(bundle.includes("{{VERSION}}"), false);
+});
+
+test("installable version agrees with the dependency lockfile", () => {
+  assert.equal(lock.version, version);
+  assert.equal(lock.packages[""].version, version);
+});
+
+test("installable bundle initializes against a real blog structure without metadata or imports", () => {
   const dom = new JSDOM(html, {
     url: "https://chii.in/user/sai/blog",
     runScripts: "outside-only",
@@ -29,7 +53,7 @@ test("development bundle initializes against a real blog structure without metad
   dom.window.close();
 });
 
-test("development bundle handles another host, both streams, category navigation and exit", async () => {
+test("installable bundle handles another host, both streams, category navigation and exit", async () => {
   const friend = html.replace(
     /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
     '<div class="columns clearit"><div id="columnUserSingle" class="column"><ul id="memberUserList"><li>好友</li></ul></div></div>',
@@ -90,7 +114,74 @@ test("development bundle handles another host, both streams, category navigation
   dom.window.close();
 });
 
-test("development bundle completes the group reading and pagination journey", async () => {
+test("installed all-posts view retries a failed stream without refetching the other, then survives leaving", async () => {
+  const dom = new JSDOM(html, {
+    url: "https://bangumi.tv/user/sai/blog#posts",
+    runScripts: "outside-only",
+  });
+  dom.window.scrollTo = () => {};
+  let failSubject = true;
+  const requests = [];
+  dom.window.fetch = async (url, init) => {
+    const query = new URL(url);
+    const group = query.pathname.endsWith("group-topics");
+    const offset = Number(query.searchParams.get("offset"));
+    const limit = Number(query.searchParams.get("limit"));
+    requests.push({ group, offset, credentials: init.credentials });
+    if (!group && failSubject) throw Error("subject unavailable");
+    return {
+      ok: true,
+      json: async () => ({
+        data: Array.from({ length: limit }, (_, i) => ({
+          id: offset + i + 1,
+          kind: group ? 0 : 1,
+          parentID: group ? 2 : 307,
+          title: `讨论 ${offset + i + 1}`,
+          replyCount: 0,
+          createdAt: group ? 2000 - offset - i : 1000 - offset - i,
+          updatedAt: 2000,
+        })),
+        pagination: { offset, limit, total: 100, totalIsEstimate: false },
+        meta: {},
+      }),
+    };
+  };
+  const tick = async () => {
+    for (let i = 0; i < 6; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const columns = dom.window.document.querySelector(".columns");
+  dom.window.eval(bundle);
+  await tick();
+  assert.equal(dom.window.document.querySelector(".entry-list .item"), null);
+  assert.match(
+    dom.window.document.querySelector("[role=status]").textContent,
+    /subject unavailable/,
+  );
+  failSubject = false;
+  dom.window.document.querySelector("[role=status] button").click();
+  await tick();
+  assert.equal(
+    dom.window.document.querySelectorAll("[data-user-topics-view] .item")
+      .length,
+    10,
+  );
+  assert.equal(requests.filter((request) => request.group).length, 1);
+  assert.ok(requests.every((request) => request.credentials === "omit"));
+  dom.window.location.hash = "#posts/subject";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  await tick();
+  assert.equal(
+    dom.window.document.querySelector("[data-user-topics-view] a.l").href,
+    "https://bangumi.tv/subject/topic/1",
+  );
+  dom.window.location.hash = "#elsewhere";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  assert.equal(dom.window.document.querySelector(".columns"), columns);
+  dom.window.close();
+});
+
+test("installable bundle completes the group reading and pagination journey", async () => {
   const dom = new JSDOM(html, {
     url: "https://bgm.tv/user/sai/blog",
     runScripts: "outside-only",
