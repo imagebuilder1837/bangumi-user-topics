@@ -2,6 +2,44 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
 
+test("loading and empty states sit beside the title in native small grey text", async () => {
+  const app = setup();
+  enter(app);
+  const header = app.document.querySelector(
+    "[data-user-topics-view] > .flex-center-v",
+  );
+  assert.equal(header?.firstElementChild.matches("h2.title"), true);
+  const status = header.querySelector(':scope > [role="status"]');
+  assert.equal(
+    status?.querySelector("small.grey")?.textContent,
+    "正在加载帖子…",
+  );
+  assert.equal(header.nextElementSibling, null);
+  await tick();
+  assert.equal(status.isConnected, false);
+  const empty = app.document.querySelector(
+    '[data-user-topics-view] > .flex-center-v > [role="status"] small.grey',
+  );
+  assert.equal(empty?.textContent, "没有找到已收录的帖子");
+  app.dom.window.close();
+});
+
+test("long errors stay complete when the title status wraps on narrow screens", async () => {
+  const longError = "connection".repeat(32);
+  const app = setup({ respond: () => Promise.reject(Error(longError)) });
+  enter(app);
+  await tick();
+  const header = app.document.querySelector(
+    "[data-user-topics-view] > .flex-center-v",
+  );
+  const status = header.querySelector('[role="status"]');
+  assert.equal(status.querySelector("small.grey").textContent, longError);
+  assert.equal(app.window.getComputedStyle(header).flexWrap, "wrap");
+  assert.equal(app.window.getComputedStyle(status).overflowWrap, "anywhere");
+  assert.equal(status.querySelector("a.chiiBtn > span").textContent, "重试");
+  app.dom.window.close();
+});
+
 test("post metadata renders safely with native links and timestamps", async () => {
   const app = setup({
     respond: (offset, limit) =>
@@ -167,13 +205,20 @@ test("a confirmed page scrolls before loading and stays there after failure and 
       .textContent,
     "2",
   );
+  const status = app.document.querySelector(
+    '[data-user-topics-view] > .flex-center-v > [role="status"]',
+  );
   assert.match(
-    app.document.querySelector("[role=status]").textContent,
+    status.querySelector("small.grey").textContent,
     /temporary failure/,
   );
+  const retry = status.querySelector("a.chiiBtn > span")?.parentElement;
+  assert.equal(retry?.textContent, "重试");
+  assert.equal(retry?.getAttribute("href"), "#posts/group");
+  assert.equal(retry?.closest("small.grey"), null);
   assert.deepEqual(app.scrolls, [[0, 0]]);
   fail = false;
-  app.document.querySelector("[role=status] button").click();
+  retry.click();
   await tick();
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   assert.deepEqual(app.scrolls, [[0, 0]]);
@@ -237,7 +282,7 @@ test("retrying a failed next page does not scroll after it succeeds", async () =
   );
   const before = app.scrolls.length;
   fail = false;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   assert.equal(app.scrolls.length, before);

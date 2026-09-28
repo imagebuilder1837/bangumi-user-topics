@@ -51,7 +51,7 @@ test("timeout frees the stream even when fetch ignores abort", async () => {
   expire();
   await tick();
   assert.match(app.document.querySelector("[role=status]").textContent, /超时/);
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(calls, 2);
   app.dom.window.close();
@@ -96,7 +96,7 @@ test("Retry-After zero permits immediate explicit retry but never auto-resumes",
   });
   await tick();
   assert.equal(calls, 1);
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(calls, 2);
   app.dom.window.close();
@@ -126,11 +126,11 @@ test("429 pauses queued work until explicit retry after Retry-After", async () =
   assert.equal(calls, 1);
   app.window.location.hash = "#posts/group";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(calls, 1);
   now = 2000;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.ok(calls > 1);
   app.dom.window.close();
@@ -161,11 +161,11 @@ test("concurrent 429 responses keep the longest cooldown", async () => {
   await tick();
   assert.equal(calls, 2);
   now = 3000;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(calls, 2);
   now = 10000;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.ok(calls > 2);
   app.dom.window.close();

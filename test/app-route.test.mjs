@@ -47,8 +47,9 @@ test("category heading and browser title follow the active topic category and re
   const app = setup();
   app.document.title = "Sai🖖的日志";
   const heading = () =>
-    app.document.querySelector("[data-user-topics-view] > h2.title")
-      ?.textContent;
+    app.document.querySelector(
+      "[data-user-topics-view] > .flex-center-v > h2.title",
+    )?.textContent;
   app.window.location.hash = "#posts";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   assert.equal(heading(), "Sai🖖的帖子");

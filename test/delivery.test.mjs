@@ -159,7 +159,7 @@ test("installed all-posts view retries a failed stream without refetching the ot
     /subject unavailable/,
   );
   failSubject = false;
-  dom.window.document.querySelector("[role=status] button").click();
+  dom.window.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(
     dom.window.document.querySelectorAll("[data-user-topics-view] .item")

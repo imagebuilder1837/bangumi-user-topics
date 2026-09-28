@@ -51,6 +51,8 @@
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
 [data-user-topics-view] { width: 100%; max-width: 750px; margin: 0 auto; padding-top: 10px; min-height: 200px; box-sizing: border-box; }
+[data-user-topics-view] > .flex-center-v { flex-wrap: wrap; column-gap: 12px; }
+[data-user-topics-view] > .flex-center-v > [role="status"] { min-width: 0; max-width: 100%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
   function inspectHost(window) {
@@ -754,12 +756,15 @@
   ) {
     const d = root.ownerDocument;
     root.replaceChildren();
+    const header = el(d, "div", "flex-center-v");
     const title = el(d, "h2", "title", postsTitle(nickname, category));
-    root.append(title);
-    const status = el(d, "div", "grey");
+    const status = el(d, "div");
     status.setAttribute("role", "status");
-    root.append(status);
-    if (state.loading) status.textContent = "正在加载帖子…";
+    const message = el(d, "small", "grey");
+    status.append(message);
+    header.append(title, status);
+    root.append(header);
+    if (state.loading) message.textContent = "正在加载帖子…";
     if (state.items?.length) {
       const list = el(d, "div", "entry-list");
       for (const topic of state.items) {
@@ -783,14 +788,18 @@
       }
       root.append(list);
     } else if (!state.loading && !state.error)
-      status.textContent = "没有找到已收录的帖子";
+      message.textContent = "没有找到已收录的帖子";
     if (state.error || state.warning) {
-      status.textContent =
+      message.textContent =
         state.error?.message ||
         `无法确认是否还有下一页：${state.warning?.message || "请继续重试"}`;
-      const retry = el(d, "button", "", "重试");
-      retry.type = "button";
-      retry.addEventListener("click", onRetry);
+      const retry = el(d, "a", "chiiBtn");
+      retry.href = category === "all" ? "#posts" : `#posts/${category}`;
+      retry.append(el(d, "span", "", "重试"));
+      retry.addEventListener("click", (event) => {
+        event.preventDefault();
+        onRetry();
+      });
       status.append(" ", retry);
     }
     if (state.items?.length) {

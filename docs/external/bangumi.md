@@ -45,6 +45,7 @@
 
 - 日志正文：`.flex-center-v > h2.title`；列表 `#entry_list.entry-list > .item.clearit > .entry`；标题 `h2.title > a.l`；元信息 `.tools > .time`，日期及 `a.l` 回复链接都位于该容器内。
 - 原站分页：`.page_inner` 内使用 `strong.p_cur`（当前页）与 `a.p`（页码链接）。`a.p` 是带标签约束的选择器，把 p class 贴到 button 不能获得等价外观；复用视觉即可，不复制服务端 `?page=` 链接行为。
+- 原站 `.flex-center-v` 提供左右分列的 flex 布局；`small.grey` 是 10px、`#999` 的灰字。站内按钮样式选择器是 `a.chiiBtn`（包含暗色与 hover 规则），不是 `button.chiiBtn`；`small.grey a` 会覆盖嵌套链接的字号与颜色，按钮须作为灰字元素的兄弟节点。上述选择器据同一份公开 CSS 核对。
 - 分页基线：日志页每页 10 条；收藏列表每页 24 条（原站事实；本项目选定每页 10 条，见 `../spec/ui.md`）。
 - 侧栏内容：日志侧栏含日志标签，收藏侧栏含收藏统计/标签，首页侧栏另有独立内容。
 

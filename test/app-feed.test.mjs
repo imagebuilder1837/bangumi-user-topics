@@ -170,7 +170,7 @@ test("all does not present one stream as complete when the other fails; retry re
     /subject unavailable/,
   );
   failed = false;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(
     app.requests.filter((x) => x.request.pathname.endsWith("group-topics"))
@@ -268,7 +268,7 @@ test("bad batch is an error rather than an empty page; explicit retry succeeds",
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 0);
   assert.equal(app.requests.length, 1);
   bad = false;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   app.dom.window.close();
@@ -287,7 +287,7 @@ test("a malformed meta on an empty response is an error, not an empty archive", 
   assert.match(app.document.querySelector("[role=status]").textContent, /无效/);
   assert.equal(app.requests.length, 1);
   meta = { executionMs: 0 };
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.match(
     app.document.querySelector("[role=status]").textContent,
@@ -330,10 +330,14 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
   await tick();
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   assert.equal(app.document.querySelector("[data-page]").textContent, "1");
+  const status = app.document.querySelector(
+    '[data-user-topics-view] > .flex-center-v > [role="status"]',
+  );
   assert.match(
-    app.document.querySelector("[role=status]").textContent,
+    status.querySelector("small.grey").textContent,
     /无法确认是否还有下一页：temporary failure/,
   );
+  assert.equal(status.querySelector("a.chiiBtn > span").textContent, "重试");
   assert.equal(app.document.querySelector("[data-next]").textContent, "››");
   assert.equal(
     app.document.querySelector("[data-user-topics-view] [data-page-link]"),
@@ -344,7 +348,7 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
     "下一页（未确认）",
   );
   fail = false;
-  app.document.querySelector("[role=status] button").click();
+  app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
   assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "1");
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
