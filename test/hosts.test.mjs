@@ -122,9 +122,11 @@ test("every observed host shape reads the target user and preserves original col
     enter(app);
     await tick();
     assert.equal(app.requests[0].init.credentials, "omit", path);
+    const postsRoot = d.querySelector("[data-user-topics-view]");
+    assert.equal(postsRoot.nextElementSibling, footer, path);
     assert.equal(
-      d.querySelector("[data-user-topics-view]").nextElementSibling,
-      footer,
+      app.window.getComputedStyle(postsRoot).paddingTop,
+      "10px",
       path,
     );
     assert.equal(d.querySelector(".columns"), columns, path);
