@@ -2,7 +2,8 @@
 
 ## Always-on constraints
 
-- Preserve Bangumi's host DOM and runtime state. Extend native UI patterns; do not replace the host page body. See `docs/spec/host-view.md` before changing page integration.
+- Preserve Bangumi's host DOM and runtime state; do not replace the host page body. See `docs/spec/host-view.md` before changing page integration.
+- For UI styling, first check for and reuse applicable Bangumi-native CSS. Write custom CSS only when no native style fits; notify the human about the gap and the custom CSS being added.
 - Userscript metadata and version fields are human-managed; require explicit, per-field approval before changing them. See `docs/agents/metadata.md`.
 - Issue writes are read-only by default; write only when explicitly requested or authorized by a relevant skill. See `docs/agents/issue-tracker.md`.
 - Use Conventional Commits. Before a commit, run `npm run check` on the final change state; see `docs/development.md` for the workflow.
