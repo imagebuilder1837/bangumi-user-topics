@@ -103,6 +103,31 @@ test("subject direct link and three exact category hashes use the subject endpoi
   app.dom.window.close();
 });
 
+test("category heading and browser title follow the active topic category and restore on exit", async () => {
+  const app = setup();
+  app.document.title = "Sai🖖的日志";
+  const heading = () =>
+    app.document.querySelector("[data-user-topics-view] > h2.title")
+      ?.textContent;
+  app.window.location.hash = "#posts";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(heading(), "Sai🖖的帖子");
+  assert.equal(app.document.title, "Sai🖖的帖子");
+  for (const [hash, expected] of [
+    ["#posts/group", "Sai🖖的小组话题"],
+    ["#posts/subject", "Sai🖖的条目讨论"],
+  ]) {
+    app.window.location.hash = hash;
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    assert.equal(heading(), expected);
+    assert.equal(app.document.title, expected);
+  }
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(app.document.title, "Sai🖖的日志");
+  app.dom.window.close();
+});
+
 test("all merges skewed streams, shares cached prefixes and keeps category pages independent", async () => {
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts",
@@ -124,7 +149,7 @@ test("all merges skewed streams, shares cached prefixes and keeps category pages
   });
   await tick();
   assert.deepEqual(
-    [...app.document.querySelectorAll(".entry-list a.l")].map(
+    [...app.document.querySelectorAll(".entry-list h2.title > a.l")].map(
       (a) => a.textContent,
     ),
     Array.from({ length: 10 }, (_, i) => `Topic ${i + 1}`),
@@ -274,7 +299,9 @@ test("same-time topics retain source order and kind-qualified identity", async (
   });
   await tick();
   assert.deepEqual(
-    [...app.document.querySelectorAll(".entry-list a.l")].map((a) => a.href),
+    [...app.document.querySelectorAll(".entry-list h2.title > a.l")].map(
+      (a) => a.href,
+    ),
     [
       "https://bgm.tv/group/topic/1",
       "https://bgm.tv/group/topic/2",
@@ -438,6 +465,24 @@ test("eleventh hit is cached for next page, with safe text, timestamp and correc
     app.document.querySelector(".entry-list a.l").textContent,
     "Topic 11",
   );
+  app.dom.window.close();
+});
+
+test("reply count links to its topic, alongside left-grouped metadata", async () => {
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    respond: (offset, limit) =>
+      envelope(offset === 0 ? [hit(7, { replyCount: 57 })] : [], offset, limit),
+  });
+  await tick();
+  const tools = app.document.querySelector(".entry-list .tools");
+  const reply = tools.querySelector("a[href='https://bgm.tv/group/topic/7']");
+  assert.equal(reply?.textContent, "57 回复");
+  assert.equal(reply?.className, "l");
+  assert.equal(tools.querySelectorAll("a").length, 2);
+  assert.equal(tools.children.length, 1);
+  assert.equal(tools.firstElementChild.className, "time");
+  assert.match(tools.textContent, /^站务论坛 · .* · 57 回复$/);
   app.dom.window.close();
 });
 
@@ -838,7 +883,24 @@ test("duplicate batches advance raw offsets and stop at three requests without d
   app.dom.window.close();
 });
 
-test("successful pagination scrolls to the list, while a native exit anchor keeps browser scroll", async () => {
+test("entering and switching categories keep scroll position", async () => {
+  const app = setup();
+  const entry = app.document.querySelector("[data-user-topics-link] a");
+  app.window.location.hash = "#posts";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(app.scrolls.length, 0);
+  for (const hash of ["#posts/group", "#posts/subject", "#posts"]) {
+    app.window.location.hash = hash;
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    assert.equal(app.scrolls.length, 0);
+  }
+  entry.click();
+  await tick();
+  assert.equal(app.scrolls.length, 0);
+  app.dom.window.close();
+});
+
+test("successful pagination scrolls to page top, while a native exit anchor keeps browser scroll", async () => {
   const app = setup({
     respond: (offset, limit) =>
       envelope(
@@ -852,7 +914,14 @@ test("successful pagination scrolls to the list, while a native exit anchor keep
   const before = app.scrolls.length;
   app.document.querySelector("[data-next]").click();
   await tick();
-  assert.ok(app.scrolls.length > before);
+  assert.deepEqual(app.scrolls.slice(before), [[0, 0]]);
+  app.document.querySelector("[data-user-topics-view] .page_inner a.p").click();
+  await tick();
+  assert.equal(app.document.querySelector("[data-page]").textContent, "1");
+  assert.deepEqual(app.scrolls.slice(before), [
+    [0, 0],
+    [0, 0],
+  ]);
   const after = app.scrolls.length;
   app.window.location.hash = "#entry_list";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
@@ -913,7 +982,7 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
   app.dom.window.close();
 });
 
-test("a recovered host reentry on the same hash scrolls the title into view", async () => {
+test("a recovered host reentry on the same hash does not scroll", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
   const columns = app.document.querySelector(".columns");
   await tick();
@@ -926,7 +995,7 @@ test("a recovered host reentry on the same hash scrolls the title into view", as
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();
   assert.ok(app.document.querySelector("[data-user-topics-view]"));
-  assert.ok(app.scrolls.length > before);
+  assert.equal(app.scrolls.length, before);
   app.dom.window.close();
 });
 
@@ -977,7 +1046,7 @@ test("reentry after recovery repaints the cached page without new requests", asy
   assert.ok(app.document.querySelector("[data-user-topics-view]"));
   assert.equal(app.requests.length, 4);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
-  assert.ok(app.scrolls.length > before);
+  assert.equal(app.scrolls.length, before);
   app.dom.window.close();
 });
 

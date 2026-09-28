@@ -29,13 +29,21 @@ export function renderPostsNav(tabs, category) {
     li.firstElementChild.classList.toggle("focus", filter === category);
   }
 }
+export function postsTitle(nickname, category) {
+  const label = {
+    all: "帖子",
+    group: "小组话题",
+    subject: "条目讨论",
+  }[category];
+  return `${nickname}的${label}`;
+}
 export function renderPosts(
   root,
   { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
 ) {
   const d = root.ownerDocument;
   root.replaceChildren();
-  const title = el(d, "h2", "title", `${nickname}的帖子`);
+  const title = el(d, "h2", "title", postsTitle(nickname, category));
   root.append(title);
   const status = el(d, "div", "grey");
   status.setAttribute("role", "status");
@@ -53,8 +61,11 @@ export function renderPosts(
       const tools = el(d, "div", "tools");
       const parent = el(d, "a", "", topic.parent);
       parent.href = topic.parentURL;
-      const time = el(d, "span", "time", formatTime(topic.createdAt));
-      tools.append(parent, " · ", time, ` · ${topic.replies} 回复`);
+      const time = el(d, "div", "time");
+      const replies = el(d, "a", "l", `${topic.replies} 回复`);
+      replies.href = topic.url;
+      time.append(parent, " · ", formatTime(topic.createdAt), " · ", replies);
+      tools.append(time);
       entry.append(heading, tools);
       item.append(entry);
       list.append(item);

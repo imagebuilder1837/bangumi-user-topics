@@ -43,7 +43,7 @@
 
 ## 日志列表与分页结构
 
-- 日志正文：`.flex-center-v > h2.title`；列表 `#entry_list.entry-list > .item.clearit > .entry`；标题 `h2.title > a.l`；元信息 `.tools > .time`。
+- 日志正文：`.flex-center-v > h2.title`；列表 `#entry_list.entry-list > .item.clearit > .entry`；标题 `h2.title > a.l`；元信息 `.tools > .time`，日期及 `a.l` 回复链接都位于该容器内。
 - 原站分页：`.page_inner` 内使用 `strong.p_cur`（当前页）与 `a.p`（页码链接）。`a.p` 是带标签约束的选择器，把 p class 贴到 button 不能获得等价外观；复用视觉即可，不复制服务端 `?page=` 链接行为。
 - 分页基线：日志页每页 10 条；收藏列表每页 24 条（原站事实；本项目选定每页 10 条，见 `../spec/ui.md`）。
 - 侧栏内容：日志侧栏含日志标签，收藏侧栏含收藏统计/标签，首页侧栏另有独立内容。
@@ -51,7 +51,7 @@
 ## CSS 复用要点
 
 - CSS 全文未出现 `entry_list` ID 选择器；列表规则使用 `.entry-list > .item` 及其 `.entry`、`h2.title`、`.tools .time`——可只复用 class，不复制宿主 ID。
-- `.entry-list > .item` 使用 flex、下边框及换行规则；标题 16px、640px 以下 15px。
+- `.entry-list > .item` 使用 flex、下边框及换行规则；标题 16px、640px 以下 15px。`.entry-list > .item .tools` 原站使用 `justify-content: space-between`；日志的日期与回复同在唯一的 `.time` 子项中，因此整体靠左。
 - 暗色由 `html[data-theme=dark]` 及原站颜色变量覆盖；窄屏按原站 media 规则适配，无需自建主题体系。
 - 布局：通用桌面主布局约 1000px；首页（mainXL）为可伸缩主副栏，日志/目录另有 `columns-center`（主列最大 750px、侧栏 220px）。好友与具体收藏列表没有 mainXL 布局。
 - **非 mainXL 页面在 641–999px 视口仍有 1000px 祖先最小宽度**（`#wrapperNeue`/`#headerNeue2`）：仅设置自有根宽度无法跨入口一致，这就是项目侧有限几何覆盖的依据（见 `../spec/host-view.md`）。

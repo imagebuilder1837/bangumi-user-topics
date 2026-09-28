@@ -730,13 +730,21 @@
       li.firstElementChild.classList.toggle("focus", filter === category);
     }
   }
+  function postsTitle(nickname, category) {
+    const label = {
+      all: "帖子",
+      group: "小组话题",
+      subject: "条目讨论",
+    }[category];
+    return `${nickname}的${label}`;
+  }
   function renderPosts(
     root,
     { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
   ) {
     const d = root.ownerDocument;
     root.replaceChildren();
-    const title = el(d, "h2", "title", `${nickname}的帖子`);
+    const title = el(d, "h2", "title", postsTitle(nickname, category));
     root.append(title);
     const status = el(d, "div", "grey");
     status.setAttribute("role", "status");
@@ -754,8 +762,11 @@
         const tools = el(d, "div", "tools");
         const parent = el(d, "a", "", topic.parent);
         parent.href = topic.parentURL;
-        const time = el(d, "span", "time", formatTime(topic.createdAt));
-        tools.append(parent, " · ", time, ` · ${topic.replies} 回复`);
+        const time = el(d, "div", "time");
+        const replies = el(d, "a", "l", `${topic.replies} 回复`);
+        replies.href = topic.url;
+        time.append(parent, " · ", formatTime(topic.createdAt), " · ", replies);
+        tools.append(time);
         entry.append(heading, tools);
         item.append(entry);
         list.append(item);
@@ -857,13 +868,6 @@
       ]),
     );
     let explicitNavigation = false;
-    function scrollTitle() {
-      const title = document.querySelector(
-        "[data-user-topics-view] > h2.title",
-      );
-      if (title)
-        window.scrollTo(0, title.getBoundingClientRect().top + window.scrollY);
-    }
     anchor.addEventListener("click", (event) => {
       if (
         event.button === 0 &&
@@ -873,15 +877,28 @@
         !event.altKey
       ) {
         explicitNavigation = window.location.hash !== "#posts";
-        if (!explicitNavigation && visible) scrollTitle();
-        else if (!explicitNavigation && suspended) route(true);
+        if (!explicitNavigation && suspended) route(true);
       }
     });
     let visible = false,
       suspended = false,
       category = null,
       routeVersion = 0,
-      takeoverEpoch = 0;
+      takeoverEpoch = 0,
+      previousTitle = null,
+      ownedTitle = null;
+    function updateTitle(next) {
+      if (previousTitle === null) previousTitle = document.title;
+      if (ownedTitle === null || document.title === ownedTitle) {
+        ownedTitle = postsTitle(host.nickname, next);
+        document.title = ownedTitle;
+      }
+    }
+    function restoreTitle() {
+      if (ownedTitle !== null && document.title === ownedTitle)
+        document.title = previousTitle;
+      previousTitle = ownedTitle = null;
+    }
     const mounted = () =>
       host.wrapper.matches("#wrapperNeue") &&
       host.profile.matches("#headerProfile") &&
@@ -965,11 +982,7 @@
         target !== previousPage &&
         state.page === target
       ) {
-        const root = document.querySelector(
-          "[data-user-topics-view] .entry-list",
-        );
-        if (root)
-          window.scrollTo(0, root.getBoundingClientRect().top + window.scrollY);
+        window.scrollTo(0, 0);
       }
     }
     async function load(filter, target, retry = false) {
@@ -1007,8 +1020,7 @@
       state.ready = { target, result, scroll, version };
       publish(filter);
     }
-    // explicit: the user reentered through an intact entry while suspended; an
-    // explicit entry must restore title visibility just like a fresh navigation.
+    // An explicit click on the entry can reenter after a suspended host recovers.
     function route(explicit = false) {
       const next = categories[window.location.hash];
       const invalid = !mounted() || (visible && !activeHostValid());
@@ -1031,6 +1043,7 @@
             }
           anchor.classList.remove("focus");
           view.hide();
+          restoreTitle();
         } else if (!next) suspended = false;
         return;
       }
@@ -1043,29 +1056,11 @@
       routeVersion++;
       visible = true;
       category = next;
+      updateTitle(next);
       feed.setForeground(next);
-      const { subnav } = view.show();
-      if (!subnav.dataset.userTopicsNavReady) {
-        subnav.dataset.userTopicsNavReady = "";
-        subnav.addEventListener("click", (event) => {
-          const link = event.target.closest(".navSubTabs a[href]");
-          if (
-            !link ||
-            !subnav.contains(link) ||
-            event.button !== 0 ||
-            event.metaKey ||
-            event.ctrlKey ||
-            event.shiftKey ||
-            event.altKey
-          )
-            return;
-          explicitNavigation = link.hash !== window.location.hash;
-          if (!explicitNavigation) scrollTitle();
-        });
-      }
+      view.show();
       anchor.classList.add("focus");
       paint();
-      if (explicitNavigation || explicit) scrollTitle();
       explicitNavigation = false;
       if (states[next].ready) publish(next);
       else if (!states[next].started) load(next, states[next].page);
