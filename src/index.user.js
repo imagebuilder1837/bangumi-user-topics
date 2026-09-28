@@ -996,7 +996,7 @@
       state.started = true;
       state.target = target;
       state.ready = null;
-      const scroll = target !== state.page;
+      const scroll = !retry && target !== state.page;
       const version = routeVersion;
       const epoch = takeoverEpoch;
       state.current = {

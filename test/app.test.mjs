@@ -900,6 +900,35 @@ test("entering and switching categories keep scroll position", async () => {
   app.dom.window.close();
 });
 
+test("retrying a failed next page does not scroll after it succeeds", async () => {
+  let fail = true;
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    respond: (offset, limit) => {
+      if (offset === 11 && fail) throw Error("temporary failure");
+      return envelope(
+        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        offset,
+        limit,
+      );
+    },
+  });
+  await tick();
+  app.document.querySelector("[data-next]").click();
+  await tick();
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /temporary failure/,
+  );
+  const before = app.scrolls.length;
+  fail = false;
+  app.document.querySelector("[role=status] button").click();
+  await tick();
+  assert.equal(app.document.querySelector("[data-page]").textContent, "2");
+  assert.equal(app.scrolls.length, before);
+  app.dom.window.close();
+});
+
 test("successful pagination scrolls to page top, while a native exit anchor keeps browser scroll", async () => {
   const app = setup({
     respond: (offset, limit) =>
