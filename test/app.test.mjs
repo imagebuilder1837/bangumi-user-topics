@@ -449,7 +449,7 @@ test("bad batch is an error rather than an empty page; explicit retry succeeds",
         ? {
             data: [{ ...hit(1), id: Number.MAX_SAFE_INTEGER + 1 }],
             pagination: { offset, limit, total: 1, totalIsEstimate: false },
-            meta: {},
+            meta: { executionMs: 0 },
           }
         : envelope(
             Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
@@ -467,6 +467,44 @@ test("bad batch is an error rather than an empty page; explicit retry succeeds",
   await tick();
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   app.dom.window.close();
+});
+
+test("a malformed meta on an empty response is an error, not an empty archive", async () => {
+  let meta = "invalid";
+  const app = setup({
+    respond: (offset, limit) => ({
+      ...envelope([], offset, limit),
+      meta,
+    }),
+  });
+  enter(app);
+  await tick();
+  assert.match(app.document.querySelector("[role=status]").textContent, /无效/);
+  assert.equal(app.requests.length, 1);
+  meta = { executionMs: 0 };
+  app.document.querySelector("[role=status] button").click();
+  await tick();
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /没有找到已收录的帖子/,
+  );
+  app.dom.window.close();
+});
+
+test("invalid SearchEncore diagnostic objects cannot turn an empty batch into an empty archive", async () => {
+  for (const meta of [{}, { executionMs: -1 }, { executionMs: 1.5 }, []]) {
+    const app = setup({
+      respond: (offset, limit) => ({ ...envelope([], offset, limit), meta }),
+    });
+    enter(app);
+    await tick();
+    assert.match(
+      app.document.querySelector("[role=status]").textContent,
+      /无效/,
+      JSON.stringify(meta),
+    );
+    app.dom.window.close();
+  }
 });
 
 test("a failed lookahead preserves the reliable ten hits and retry fetches only one", async () => {
@@ -830,6 +868,48 @@ test("removing the host structure while active restores the remaining host state
   await tick();
   assert.equal(columns.style.display, "");
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  app.dom.window.close();
+});
+
+test("a failed host hiding condition exits, and only an explicit same-hash click can reenter", async () => {
+  let deliver;
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    respond: (offset, limit, url) =>
+      url.pathname.endsWith("subject-topics")
+        ? envelope([], offset, limit)
+        : new Promise((resolve) => {
+            deliver = () =>
+              resolve(
+                envelope(
+                  Array.from({ length: limit }, (_, i) => hit(i + 1)),
+                  offset,
+                  limit,
+                ),
+              );
+          }),
+  });
+  await tick();
+  const columns = app.document.querySelector(".columns");
+  columns.classList.remove("columns");
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.window.location.hash, "#posts/group");
+  deliver();
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  columns.classList.add("columns");
+  app.window.location.hash = "#posts";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  app.document.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.equal(
+    app.document.querySelector(".entry-list a.l")?.textContent,
+    "Topic 1",
+  );
+  assert.equal(app.requests.length, 2);
   app.dom.window.close();
 });
 

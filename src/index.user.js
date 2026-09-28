@@ -46,7 +46,7 @@
   };
   const css = `
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper > .columns,
-[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper:not([data-user-topics-subnav]) { display: none !important; }
+[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper[data-user-topics-original-subnav="on"] { display: none !important; }
 [data-user-topics-active="on"] { min-width: 0 !important; }
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
@@ -152,12 +152,17 @@
       previousFocus = null,
       previousMarker = null,
       markerOwned = false,
-      focusOwned = false;
+      focusOwned = false,
+      subnavMarkerOwned = false,
+      previousSubnavMarker = null;
     const markerObserver = new window.MutationObserver(() => {
       markerOwned = false;
     });
     const focusObserver = new window.MutationObserver(() => {
       focusOwned = false;
+    });
+    const subnavObserver = new window.MutationObserver(() => {
+      subnavMarkerOwned = false;
     });
     function show() {
       if (root) return { root, subnav };
@@ -181,6 +186,17 @@
         attributes: true,
         attributeFilter: ["data-user-topics-active"],
       });
+      if (host.originalSub) {
+        previousSubnavMarker = host.originalSub.getAttribute(
+          "data-user-topics-original-subnav",
+        );
+        host.originalSub.dataset.userTopicsOriginalSubnav = "on";
+        subnavMarkerOwned = true;
+        subnavObserver.observe(host.originalSub, {
+          attributes: true,
+          attributeFilter: ["data-user-topics-original-subnav"],
+        });
+      }
       document.head.append(style);
       subnav = document.createElement("div");
       subnav.className = "navSubTabsWrapper";
@@ -206,7 +222,22 @@
       markerObserver.disconnect();
       if (focusObserver.takeRecords().length) focusOwned = false;
       focusObserver.disconnect();
+      if (subnavObserver.takeRecords().length) subnavMarkerOwned = false;
+      subnavObserver.disconnect();
       style.remove();
+      if (
+        subnavMarkerOwned &&
+        host.originalSub?.dataset.userTopicsOriginalSubnav === "on"
+      ) {
+        if (previousSubnavMarker === null)
+          delete host.originalSub.dataset.userTopicsOriginalSubnav;
+        else
+          host.originalSub.setAttribute(
+            "data-user-topics-original-subnav",
+            previousSubnavMarker,
+          );
+      }
+      subnavMarkerOwned = false;
       if (
         focusOwned &&
         focus?.isConnected &&
@@ -253,6 +284,9 @@
       !Array.isArray(payload.data) ||
       !payload.pagination ||
       !payload.meta ||
+      typeof payload.meta !== "object" ||
+      Array.isArray(payload.meta) ||
+      !safeID(payload.meta.executionMs) ||
       payload.pagination.offset !== offset ||
       payload.pagination.limit !== limit ||
       !safeID(payload.pagination.total) ||
@@ -829,13 +863,18 @@
       ) {
         explicitNavigation = window.location.hash !== "#posts";
         if (!explicitNavigation && visible) scrollTitle();
+        else if (!explicitNavigation && suspended) route(true);
       }
     });
     let visible = false,
+      suspended = false,
       category = null,
-      routeVersion = 0;
+      routeVersion = 0,
+      takeoverEpoch = 0;
     const mounted = () =>
       host.columns.isConnected &&
+      host.columns.classList.contains("columns") &&
+      host.profile.nextElementSibling === host.columns.parentElement &&
       host.footer.parentElement === host.columns.parentElement &&
       host.bodyEvidence.isConnected &&
       host.columns.contains(host.bodyEvidence) &&
@@ -844,6 +883,14 @@
           host.originalSub.parentElement ===
             host.nav.parentElement.parentElement)) &&
       host.nav.isConnected;
+    const activeHostValid = () =>
+      mounted() &&
+      host.wrapper.dataset.userTopicsActive === "on" &&
+      (!host.originalSub ||
+        host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
+      window.getComputedStyle(host.columns).display === "none" &&
+      (!host.originalSub ||
+        window.getComputedStyle(host.originalSub).display === "none");
     function paint() {
       if (!visible) return;
       const root = document.querySelector("[data-user-topics-view]");
@@ -864,7 +911,11 @@
     }
     function publish(filter) {
       const state = states[filter];
-      if (!state.ready || !visible || category !== filter || !mounted()) return;
+      if (!state.ready || !visible || category !== filter) return;
+      if (!activeHostValid()) {
+        route();
+        return;
+      }
       const { target, result, scroll, version } = state.ready;
       state.ready = null;
       const previousPage = state.page;
@@ -901,7 +952,11 @@
       }
     }
     async function load(filter, target, retry = false) {
-      if (!visible || category !== filter || !mounted()) return;
+      if (!visible || category !== filter) return;
+      if (!activeHostValid()) {
+        route();
+        return;
+      }
       const state = states[filter];
       if (state.pending) return;
       state.started = true;
@@ -909,6 +964,7 @@
       state.ready = null;
       const scroll = target !== state.page;
       const version = routeVersion;
+      const epoch = takeoverEpoch;
       state.current = {
         ...state.current,
         loading: true,
@@ -925,30 +981,42 @@
       } catch (error) {
         result = { error };
       }
-      if (state.pending !== job) return;
+      if (state.pending !== job || epoch !== takeoverEpoch) return;
       state.pending = null;
       state.ready = { target, result, scroll, version };
       publish(filter);
     }
-    function route() {
+    function route(explicit = false) {
       const next = categories[window.location.hash];
-      if (
-        !next ||
+      const invalid =
         !mounted() ||
         (visible &&
-          !document.querySelector("[data-user-topics-view]")?.isConnected)
-      ) {
+          (!activeHostValid() ||
+            !document.querySelector("[data-user-topics-view]")?.isConnected));
+      if (!next || invalid) {
         explicitNavigation = false;
         if (visible) {
           routeVersion++;
           visible = false;
+          suspended = Boolean(next && invalid);
+          if (suspended) takeoverEpoch++;
           category = null;
           feed.setForeground(null);
+          if (suspended)
+            for (const state of Object.values(states)) {
+              if (state.ready || state.pending || state.current.loading)
+                state.started = false;
+              state.ready = null;
+              state.pending = null;
+              state.current = { ...state.current, loading: false };
+            }
           anchor.classList.remove("focus");
           view.hide();
-        }
+        } else if (!next) suspended = false;
         return;
       }
+      if (suspended && !explicit && !explicitNavigation) return;
+      suspended = false;
       if (visible && category === next) {
         explicitNavigation = false;
         return;
@@ -990,7 +1058,7 @@
     const observer = new window.MutationObserver(() => {
       if (
         visible &&
-        (!mounted() ||
+        (!activeHostValid() ||
           !document.querySelector("[data-user-topics-view]")?.isConnected)
       )
         route();
@@ -998,9 +1066,23 @@
     observer.observe(host.columns.parentElement, { childList: true });
     observer.observe(host.nav.parentElement, { childList: true });
     observer.observe(host.profile.parentElement, { childList: true });
-    observer.observe(host.columns, { childList: true, subtree: true });
+    observer.observe(host.columns, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style"],
+    });
+    observer.observe(host.wrapper, {
+      attributes: true,
+      attributeFilter: ["data-user-topics-active"],
+    });
+    if (host.originalSub)
+      observer.observe(host.originalSub, {
+        attributes: true,
+        attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
+      });
     observer.observe(host.nav.parentElement.parentElement, { childList: true });
-    window.addEventListener("hashchange", route);
+    window.addEventListener("hashchange", () => route());
     route();
   }
 

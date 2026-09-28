@@ -80,7 +80,7 @@ test("installable bundle handles another host, both streams, category navigation
           limit: Number(u.searchParams.get("limit")),
           totalIsEstimate: false,
         },
-        meta: {},
+        meta: { executionMs: 0 },
       }),
     };
   };
@@ -142,7 +142,7 @@ test("installed all-posts view retries a failed stream without refetching the ot
           updatedAt: 2000,
         })),
         pagination: { offset, limit, total: 100, totalIsEstimate: false },
-        meta: {},
+        meta: { executionMs: 0 },
       }),
     };
   };
@@ -212,7 +212,7 @@ test("installed merged pagination keeps an in-flight result for return without r
           updatedAt: 2000,
         })),
         pagination: { offset, limit, total: 100, totalIsEstimate: false },
-        meta: {},
+        meta: { executionMs: 0 },
       }),
     };
   };
@@ -282,7 +282,7 @@ test("installable bundle completes the group reading and pagination journey", as
           updatedAt: 1697285544,
         })),
         pagination: { offset, limit, total: 100, totalIsEstimate: false },
-        meta: {},
+        meta: { executionMs: 0 },
       }),
     };
   };

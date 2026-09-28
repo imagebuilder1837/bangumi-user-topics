@@ -9,6 +9,9 @@ export function normalizeBatch(
     !Array.isArray(payload.data) ||
     !payload.pagination ||
     !payload.meta ||
+    typeof payload.meta !== "object" ||
+    Array.isArray(payload.meta) ||
+    !safeID(payload.meta.executionMs) ||
     payload.pagination.offset !== offset ||
     payload.pagination.limit !== limit ||
     !safeID(payload.pagination.total) ||

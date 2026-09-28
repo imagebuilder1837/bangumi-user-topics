@@ -70,7 +70,7 @@ function open(
                   ]
                 : [],
             pagination: { total: 1, offset, limit, totalIsEstimate: false },
-            meta: {},
+            meta: { executionMs: 0 },
           },
       };
     },
@@ -235,7 +235,7 @@ test("async results do not discard keyboard focus on the category link", async (
               limit: Number(u.searchParams.get("limit")),
               totalIsEstimate: false,
             },
-            meta: {},
+            meta: { executionMs: 0 },
           });
       }),
   });
@@ -265,6 +265,40 @@ test("removing the host's original subnavigation ends takeover without resurrect
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);
   assert.equal(app.document.querySelector(".columns"), columns);
+  app.dom.window.close();
+});
+
+test("a later extension subnavigation remains visible during takeover", async () => {
+  const app = open("/anime/list/sai/collect#posts/group", "state", {
+    subnav: true,
+  });
+  await tick();
+  const native = app.document.querySelector(
+    ".navSubTabsWrapper:not([data-user-topics-subnav])",
+  );
+  const extension = app.document.createElement("div");
+  extension.className = "navSubTabsWrapper";
+  extension.innerHTML = '<ul class="navSubTabs"><li>扩展导航</li></ul>';
+  native.after(extension);
+  await tick();
+  assert.equal(app.window.getComputedStyle(native).display, "none");
+  assert.notEqual(app.window.getComputedStyle(extension).display, "none");
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  app.dom.window.close();
+});
+
+test("external changes to the original subnavigation marker end takeover without overwriting them", async () => {
+  const app = open("/anime/list/sai/collect#posts/group", "state", {
+    subnav: true,
+  });
+  await tick();
+  const native = app.document.querySelector(
+    ".navSubTabsWrapper[data-user-topics-original-subnav]",
+  );
+  native.dataset.userTopicsOriginalSubnav = "external";
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(native.dataset.userTopicsOriginalSubnav, "external");
   app.dom.window.close();
 });
 

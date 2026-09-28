@@ -64,13 +64,18 @@ export function start(
     ) {
       explicitNavigation = window.location.hash !== "#posts";
       if (!explicitNavigation && visible) scrollTitle();
+      else if (!explicitNavigation && suspended) route(true);
     }
   });
   let visible = false,
+    suspended = false,
     category = null,
-    routeVersion = 0;
+    routeVersion = 0,
+    takeoverEpoch = 0;
   const mounted = () =>
     host.columns.isConnected &&
+    host.columns.classList.contains("columns") &&
+    host.profile.nextElementSibling === host.columns.parentElement &&
     host.footer.parentElement === host.columns.parentElement &&
     host.bodyEvidence.isConnected &&
     host.columns.contains(host.bodyEvidence) &&
@@ -79,6 +84,14 @@ export function start(
         host.originalSub.parentElement ===
           host.nav.parentElement.parentElement)) &&
     host.nav.isConnected;
+  const activeHostValid = () =>
+    mounted() &&
+    host.wrapper.dataset.userTopicsActive === "on" &&
+    (!host.originalSub ||
+      host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
+    window.getComputedStyle(host.columns).display === "none" &&
+    (!host.originalSub ||
+      window.getComputedStyle(host.originalSub).display === "none");
   function paint() {
     if (!visible) return;
     const root = document.querySelector("[data-user-topics-view]");
@@ -98,7 +111,11 @@ export function start(
   }
   function publish(filter) {
     const state = states[filter];
-    if (!state.ready || !visible || category !== filter || !mounted()) return;
+    if (!state.ready || !visible || category !== filter) return;
+    if (!activeHostValid()) {
+      route();
+      return;
+    }
     const { target, result, scroll, version } = state.ready;
     state.ready = null;
     const previousPage = state.page;
@@ -135,7 +152,11 @@ export function start(
     }
   }
   async function load(filter, target, retry = false) {
-    if (!visible || category !== filter || !mounted()) return;
+    if (!visible || category !== filter) return;
+    if (!activeHostValid()) {
+      route();
+      return;
+    }
     const state = states[filter];
     if (state.pending) return;
     state.started = true;
@@ -143,6 +164,7 @@ export function start(
     state.ready = null;
     const scroll = target !== state.page;
     const version = routeVersion;
+    const epoch = takeoverEpoch;
     state.current = {
       ...state.current,
       loading: true,
@@ -159,30 +181,42 @@ export function start(
     } catch (error) {
       result = { error };
     }
-    if (state.pending !== job) return;
+    if (state.pending !== job || epoch !== takeoverEpoch) return;
     state.pending = null;
     state.ready = { target, result, scroll, version };
     publish(filter);
   }
-  function route() {
+  function route(explicit = false) {
     const next = categories[window.location.hash];
-    if (
-      !next ||
+    const invalid =
       !mounted() ||
       (visible &&
-        !document.querySelector("[data-user-topics-view]")?.isConnected)
-    ) {
+        (!activeHostValid() ||
+          !document.querySelector("[data-user-topics-view]")?.isConnected));
+    if (!next || invalid) {
       explicitNavigation = false;
       if (visible) {
         routeVersion++;
         visible = false;
+        suspended = Boolean(next && invalid);
+        if (suspended) takeoverEpoch++;
         category = null;
         feed.setForeground(null);
+        if (suspended)
+          for (const state of Object.values(states)) {
+            if (state.ready || state.pending || state.current.loading)
+              state.started = false;
+            state.ready = null;
+            state.pending = null;
+            state.current = { ...state.current, loading: false };
+          }
         anchor.classList.remove("focus");
         view.hide();
-      }
+      } else if (!next) suspended = false;
       return;
     }
+    if (suspended && !explicit && !explicitNavigation) return;
+    suspended = false;
     if (visible && category === next) {
       explicitNavigation = false;
       return;
@@ -224,7 +258,7 @@ export function start(
   const observer = new window.MutationObserver(() => {
     if (
       visible &&
-      (!mounted() ||
+      (!activeHostValid() ||
         !document.querySelector("[data-user-topics-view]")?.isConnected)
     )
       route();
@@ -232,8 +266,22 @@ export function start(
   observer.observe(host.columns.parentElement, { childList: true });
   observer.observe(host.nav.parentElement, { childList: true });
   observer.observe(host.profile.parentElement, { childList: true });
-  observer.observe(host.columns, { childList: true, subtree: true });
+  observer.observe(host.columns, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["class", "style"],
+  });
+  observer.observe(host.wrapper, {
+    attributes: true,
+    attributeFilter: ["data-user-topics-active"],
+  });
+  if (host.originalSub)
+    observer.observe(host.originalSub, {
+      attributes: true,
+      attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
+    });
   observer.observe(host.nav.parentElement.parentElement, { childList: true });
-  window.addEventListener("hashchange", route);
+  window.addEventListener("hashchange", () => route());
   route();
 }

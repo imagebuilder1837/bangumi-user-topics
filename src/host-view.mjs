@@ -11,7 +11,7 @@ const columnShapes = {
 };
 const css = `
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper > .columns,
-[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper:not([data-user-topics-subnav]) { display: none !important; }
+[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper[data-user-topics-original-subnav="on"] { display: none !important; }
 [data-user-topics-active="on"] { min-width: 0 !important; }
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
@@ -117,12 +117,17 @@ export function createHostView(window, host) {
     previousFocus = null,
     previousMarker = null,
     markerOwned = false,
-    focusOwned = false;
+    focusOwned = false,
+    subnavMarkerOwned = false,
+    previousSubnavMarker = null;
   const markerObserver = new window.MutationObserver(() => {
     markerOwned = false;
   });
   const focusObserver = new window.MutationObserver(() => {
     focusOwned = false;
+  });
+  const subnavObserver = new window.MutationObserver(() => {
+    subnavMarkerOwned = false;
   });
   function show() {
     if (root) return { root, subnav };
@@ -146,6 +151,17 @@ export function createHostView(window, host) {
       attributes: true,
       attributeFilter: ["data-user-topics-active"],
     });
+    if (host.originalSub) {
+      previousSubnavMarker = host.originalSub.getAttribute(
+        "data-user-topics-original-subnav",
+      );
+      host.originalSub.dataset.userTopicsOriginalSubnav = "on";
+      subnavMarkerOwned = true;
+      subnavObserver.observe(host.originalSub, {
+        attributes: true,
+        attributeFilter: ["data-user-topics-original-subnav"],
+      });
+    }
     document.head.append(style);
     subnav = document.createElement("div");
     subnav.className = "navSubTabsWrapper";
@@ -171,7 +187,22 @@ export function createHostView(window, host) {
     markerObserver.disconnect();
     if (focusObserver.takeRecords().length) focusOwned = false;
     focusObserver.disconnect();
+    if (subnavObserver.takeRecords().length) subnavMarkerOwned = false;
+    subnavObserver.disconnect();
     style.remove();
+    if (
+      subnavMarkerOwned &&
+      host.originalSub?.dataset.userTopicsOriginalSubnav === "on"
+    ) {
+      if (previousSubnavMarker === null)
+        delete host.originalSub.dataset.userTopicsOriginalSubnav;
+      else
+        host.originalSub.setAttribute(
+          "data-user-topics-original-subnav",
+          previousSubnavMarker,
+        );
+    }
+    subnavMarkerOwned = false;
     if (
       focusOwned &&
       focus?.isConnected &&
