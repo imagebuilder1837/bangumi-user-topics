@@ -37,7 +37,7 @@ test("installable version agrees with the dependency lockfile", () => {
   assert.equal(lock.packages[""].version, version);
 });
 
-test("installable bundle initializes against a real blog structure without metadata or imports", () => {
+test("installable bundle initializes from its metadata-bearing single file", () => {
   const dom = new JSDOM(html, {
     url: "https://chii.in/user/sai/blog",
     runScripts: "outside-only",
@@ -178,6 +178,82 @@ test("installed all-posts view retries a failed stream without refetching the ot
   dom.window.location.hash = "#elsewhere";
   dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
   assert.equal(dom.window.document.querySelector(".columns"), columns);
+  dom.window.close();
+});
+
+test("installed merged pagination keeps an in-flight result for return without reopening the host", async () => {
+  const dom = new JSDOM(html, {
+    url: "https://bgm.tv/user/sai/blog#posts",
+    runScripts: "outside-only",
+  });
+  dom.window.scrollTo = () => {};
+  let release;
+  const requests = [];
+  dom.window.fetch = async (url, init) => {
+    const query = new URL(url);
+    const group = query.pathname.endsWith("group-topics");
+    const offset = Number(query.searchParams.get("offset"));
+    const limit = Number(query.searchParams.get("limit"));
+    requests.push({ group, offset, credentials: init.credentials });
+    if (group && offset === 11)
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    return {
+      ok: true,
+      json: async () => ({
+        data: Array.from({ length: limit }, (_, i) => ({
+          id: offset + i + 1,
+          kind: group ? 0 : 1,
+          parentID: group ? 2 : 307,
+          title: `主题 ${offset + i + 1}`,
+          replyCount: 0,
+          createdAt: 2000 - 2 * (offset + i) + (group ? 1 : 0),
+          updatedAt: 2000,
+        })),
+        pagination: { offset, limit, total: 100, totalIsEstimate: false },
+        meta: {},
+      }),
+    };
+  };
+  const tick = async () => {
+    for (let i = 0; i < 6; i++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const columns = dom.window.document.querySelector(".columns");
+  dom.window.eval(bundle);
+  await tick();
+  assert.equal(
+    dom.window.document.querySelectorAll("[data-user-topics-view] .item")
+      .length,
+    10,
+  );
+  dom.window.document.querySelector("[data-next]").click();
+  await tick();
+  assert.equal(typeof release, "function");
+  dom.window.location.hash = "#other";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  release();
+  await tick();
+  assert.equal(
+    dom.window.document.querySelector("[data-user-topics-view]"),
+    null,
+  );
+  assert.equal(dom.window.document.querySelector(".columns"), columns);
+  const completed = requests.length;
+  dom.window.location.hash = "#posts";
+  dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
+  await tick();
+  assert.equal(
+    dom.window.document.querySelector("[data-page]").textContent,
+    "2",
+  );
+  assert.equal(
+    dom.window.document.querySelector("[data-user-topics-view] a.l").href,
+    "https://bgm.tv/group/topic/6",
+  );
+  assert.equal(requests.length, completed);
+  assert.ok(requests.every((request) => request.credentials === "omit"));
   dom.window.close();
 });
 
