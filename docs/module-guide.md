@@ -19,4 +19,4 @@
 | 单文件交付 | `src/index.user.js` | build 生成的可安装单文件，不手工编辑 header |
 | 构建与静态检查 | `scripts/build.mjs`、`scripts/check.mjs` | 生成单文件；check 验证版本及模板、node --check、格式、artifact 一致性及完整测试 |
 
-测试按维护源的职责组织在 `test/`：`app.test.mjs` 通过应用入口验收 route、导航、宿主、adapter、feed 与 rendering；`hosts.test.mjs` 覆盖多宿主结构；`delivery.test.mjs` 验收可安装生成物。DOM 测试使用 jsdom；日志 fixture 在 `test/fixtures/`。
+测试按维护源的职责组织在 `test/`：`app-route.test.mjs` 覆盖入口、路由及宿主失效，`app-feed.test.mjs` 覆盖数据合并与缓存语义，`app-scheduling.test.mjs` 覆盖调度与后台结果，`app-view.test.mjs` 覆盖列表、分页与滚动；它们通过 `app-support.mjs` 共用应用入口的 jsdom fixture。`hosts.test.mjs` 覆盖多宿主结构；`delivery.test.mjs` 验收可安装生成物。日志 fixture 在 `test/fixtures/`。

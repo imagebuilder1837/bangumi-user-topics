@@ -740,7 +740,17 @@
   }
   function renderPosts(
     root,
-    { nickname, category = "group", state, page, onNext, onPrevious, onRetry },
+    {
+      nickname,
+      category = "group",
+      state,
+      page,
+      confirmedPage,
+      onPage,
+      onNext,
+      onPrevious,
+      onRetry,
+    },
   ) {
     const d = root.ownerDocument;
     root.replaceChildren();
@@ -796,9 +806,31 @@
         });
         pages.append(previous);
       }
-      const current = el(d, "strong", "p_cur", String(page));
-      current.dataset.page = "";
-      pages.append(current);
+      const first = Math.min(
+        Math.max(1, page - 2),
+        Math.max(1, confirmedPage - 9),
+      );
+      for (
+        let number = first;
+        number <= Math.min(confirmedPage, first + 9);
+        number++
+      ) {
+        if (number === page) {
+          const current = el(d, "strong", "p_cur", String(number));
+          current.dataset.page = "";
+          pages.append(current);
+          continue;
+        }
+        const link = el(d, "a", "p", String(number));
+        link.dataset.pageLink = String(number);
+        link.href = category === "all" ? "#posts" : `#posts/${category}`;
+        if (state.loading) link.setAttribute("aria-disabled", "true");
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          if (!state.loading) onPage(number);
+        });
+        pages.append(link);
+      }
       if (state.next !== "no") {
         const next = el(d, "a", "p", "››");
         next.setAttribute(
@@ -859,6 +891,7 @@
         categories[hash],
         {
           page: 1,
+          confirmedPage: 0,
           current: { loading: false },
           pending: null,
           ready: null,
@@ -941,6 +974,8 @@
           category,
           state: state.current,
           page: state.page,
+          confirmedPage: state.confirmedPage,
+          onPage: (target) => load(category, target),
           onNext: () => load(category, state.page + 1),
           onPrevious: () => load(category, state.page - 1),
           onRetry: () =>
@@ -967,6 +1002,10 @@
       else if (result.items.length) {
         feed.commit(filter, target, result.items);
         state.page = target;
+        state.confirmedPage = Math.max(
+          state.confirmedPage,
+          target + (result.next === "yes" ? 1 : 0),
+        );
         state.current = { ...result, loading: false };
       } else
         state.current = {

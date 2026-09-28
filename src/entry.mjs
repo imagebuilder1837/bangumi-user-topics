@@ -43,6 +43,7 @@ export function start(
       categories[hash],
       {
         page: 1,
+        confirmedPage: 0,
         current: { loading: false },
         pending: null,
         ready: null,
@@ -125,6 +126,8 @@ export function start(
         category,
         state: state.current,
         page: state.page,
+        confirmedPage: state.confirmedPage,
+        onPage: (target) => load(category, target),
         onNext: () => load(category, state.page + 1),
         onPrevious: () => load(category, state.page - 1),
         onRetry: () => load(category, state.current.target || state.page, true),
@@ -150,6 +153,10 @@ export function start(
     else if (result.items.length) {
       feed.commit(filter, target, result.items);
       state.page = target;
+      state.confirmedPage = Math.max(
+        state.confirmedPage,
+        target + (result.next === "yes" ? 1 : 0),
+      );
       state.current = { ...result, loading: false };
     } else
       state.current = {
