@@ -236,5 +236,13 @@ export function createHostView(window, host) {
       }
     }
   }
-  return { show, hide };
+  function intact() {
+    return (
+      root?.parentElement === host.footer.parentElement &&
+      root.previousElementSibling === host.columns &&
+      root.nextElementSibling === host.footer &&
+      subnav?.parentElement === host.nav.parentElement.parentElement
+    );
+  }
+  return { show, hide, intact };
 }

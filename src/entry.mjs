@@ -99,6 +99,7 @@ export function start(
   const activeHostValid = () =>
     mounted() &&
     host.wrapper.dataset.userTopicsActive === "on" &&
+    view.intact() &&
     (!host.originalSub ||
       host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
     window.getComputedStyle(host.columns).display === "none" &&
@@ -200,11 +201,7 @@ export function start(
   }
   function route(explicit = false) {
     const next = categories[window.location.hash];
-    const invalid =
-      !mounted() ||
-      (visible &&
-        (!activeHostValid() ||
-          !document.querySelector("[data-user-topics-view]")?.isConnected));
+    const invalid = !mounted() || (visible && !activeHostValid());
     if (!next || invalid) {
       explicitNavigation = false;
       if (visible) {
@@ -268,12 +265,7 @@ export function start(
     }
   }
   const observer = new window.MutationObserver(() => {
-    if (
-      visible &&
-      (!activeHostValid() ||
-        !document.querySelector("[data-user-topics-view]")?.isConnected)
-    )
-      route();
+    if (visible && !activeHostValid()) route();
   });
   observer.observe(main, {
     childList: true,

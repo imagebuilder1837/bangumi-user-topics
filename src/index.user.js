@@ -273,7 +273,15 @@
         }
       }
     }
-    return { show, hide };
+    function intact() {
+      return (
+        root?.parentElement === host.footer.parentElement &&
+        root.previousElementSibling === host.columns &&
+        root.nextElementSibling === host.footer &&
+        subnav?.parentElement === host.nav.parentElement.parentElement
+      );
+    }
+    return { show, hide, intact };
   }
 
   const safeID = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -898,6 +906,7 @@
     const activeHostValid = () =>
       mounted() &&
       host.wrapper.dataset.userTopicsActive === "on" &&
+      view.intact() &&
       (!host.originalSub ||
         host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
       window.getComputedStyle(host.columns).display === "none" &&
@@ -1000,11 +1009,7 @@
     }
     function route(explicit = false) {
       const next = categories[window.location.hash];
-      const invalid =
-        !mounted() ||
-        (visible &&
-          (!activeHostValid() ||
-            !document.querySelector("[data-user-topics-view]")?.isConnected));
+      const invalid = !mounted() || (visible && !activeHostValid());
       if (!next || invalid) {
         explicitNavigation = false;
         if (visible) {
@@ -1068,12 +1073,7 @@
       }
     }
     const observer = new window.MutationObserver(() => {
-      if (
-        visible &&
-        (!activeHostValid() ||
-          !document.querySelector("[data-user-topics-view]")?.isConnected)
-      )
-        route();
+      if (visible && !activeHostValid()) route();
     });
     observer.observe(main, {
       childList: true,

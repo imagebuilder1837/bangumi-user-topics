@@ -943,6 +943,29 @@ test("moving the original primary navigation out of the profile ends takeover", 
   app.dom.window.close();
 });
 
+test("moving the owned posts view outside its host slot ends takeover", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+  await tick();
+  const columns = app.document.querySelector(".columns");
+  const root = app.document.querySelector("[data-user-topics-view]");
+  app.document.body.append(root);
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.window.getComputedStyle(columns).display, "block");
+  app.dom.window.close();
+});
+
+test("removing the owned category navigation ends takeover", async () => {
+  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
+  await tick();
+  const columns = app.document.querySelector(".columns");
+  app.document.querySelector("[data-user-topics-subnav]").remove();
+  await tick();
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
+  app.dom.window.close();
+});
+
 test("external display and active marker updates are not overwritten on exit", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
   const columns = app.document.querySelector(".columns");
