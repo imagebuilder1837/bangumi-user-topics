@@ -917,7 +917,6 @@
     let visible = false,
       suspended = false,
       category = null,
-      routeVersion = 0,
       takeoverEpoch = 0,
       previousTitle = null,
       ownedTitle = null;
@@ -990,9 +989,8 @@
         route();
         return;
       }
-      const { target, result, scroll, version } = state.ready;
+      const { target, result } = state.ready;
       state.ready = null;
-      const previousPage = state.page;
       if (result.error)
         state.current = {
           ...state.current,
@@ -1016,14 +1014,6 @@
           error: null,
         };
       paint();
-      if (
-        scroll &&
-        version === routeVersion &&
-        target !== previousPage &&
-        state.page === target
-      ) {
-        window.scrollTo(0, 0);
-      }
     }
     async function load(filter, target, retry = false) {
       if (!visible || category !== filter) return;
@@ -1037,7 +1027,7 @@
       state.target = target;
       state.ready = null;
       const scroll = !retry && target !== state.page;
-      const version = routeVersion;
+      if (scroll) window.scrollTo(0, 0);
       const epoch = takeoverEpoch;
       state.current = {
         ...state.current,
@@ -1057,7 +1047,7 @@
       }
       if (state.pending !== job || epoch !== takeoverEpoch) return;
       state.pending = null;
-      state.ready = { target, result, scroll, version };
+      state.ready = { target, result };
       publish(filter);
     }
     // An explicit click on the entry can reenter after a suspended host recovers.
@@ -1067,7 +1057,6 @@
       if (!next || invalid) {
         explicitNavigation = false;
         if (visible) {
-          routeVersion++;
           visible = false;
           suspended = Boolean(next && invalid);
           if (suspended) takeoverEpoch++;
@@ -1093,7 +1082,6 @@
         explicitNavigation = false;
         return;
       }
-      routeVersion++;
       visible = true;
       category = next;
       updateTitle(next);

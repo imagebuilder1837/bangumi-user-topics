@@ -138,10 +138,13 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
   app.dom.window.close();
 });
 
-test("a confirmed page stays linked when its first load fails and can be retried", async () => {
+test("a confirmed page scrolls before loading and stays there after failure and retry", async () => {
   let fail = true;
-  const app = setup({
+  let app;
+  const scrollsAtRequest = [];
+  app = setup({
     respond: (offset, limit) => {
+      scrollsAtRequest.push(app.scrolls.length);
       if (offset === 11 && fail) throw Error("temporary failure");
       return envelope(
         Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
@@ -155,7 +158,9 @@ test("a confirmed page stays linked when its first load fails and can be retried
   app.document
     .querySelector("[data-user-topics-view] [data-page-link='2']")
     .click();
+  assert.deepEqual(app.scrolls, [[0, 0]]);
   await tick();
+  assert.deepEqual(scrollsAtRequest, [0, 1]);
   assert.equal(app.document.querySelector("[data-page]").textContent, "1");
   assert.equal(
     app.document.querySelector("[data-user-topics-view] [data-page-link='2']")
@@ -166,12 +171,12 @@ test("a confirmed page stays linked when its first load fails and can be retried
     app.document.querySelector("[role=status]").textContent,
     /temporary failure/,
   );
-  assert.deepEqual(app.scrolls, []);
+  assert.deepEqual(app.scrolls, [[0, 0]]);
   fail = false;
   app.document.querySelector("[role=status] button").click();
   await tick();
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
-  assert.deepEqual(app.scrolls, []);
+  assert.deepEqual(app.scrolls, [[0, 0]]);
   app.dom.window.close();
 });
 
@@ -252,6 +257,7 @@ test("successful pagination scrolls to page top, while a native exit anchor keep
   await tick();
   const before = app.scrolls.length;
   app.document.querySelector("[data-next]").click();
+  assert.deepEqual(app.scrolls.slice(before), [[0, 0]]);
   await tick();
   assert.deepEqual(app.scrolls.slice(before), [[0, 0]]);
   app.document.querySelector("[data-user-topics-view] .page_inner a.p").click();
