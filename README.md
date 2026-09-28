@@ -1,7 +1,20 @@
 # Bangumi 用户帖子
 
-在支持的用户页一级导航中点击“帖子”，可浏览该用户发起的全部帖子、小组话题或条目讨论，并按创建时间翻页。支持 HTTPS 的 bgm.tv、bangumi.tv、chii.in 上已观察结构的用户主页、日志、目录、好友、五类收藏概览及具体收藏状态；结构不明的页面不会接管。
+在 Bangumi 用户页个人导航中增加“帖子”入口，查看该用户发起的小组话题与条目讨论。
 
-数据来自第三方 [SearchEncore](https://bgmdb.ry.mk) 镜像索引；仅进入帖子视图时查询。没有找到已收录的帖子不表示用户从未发帖，动态索引也不能保证历史完整。
+## 效果
 
-运行 `npm install && npm run build && npm run check`，然后在 userscript 管理器中安装生成的 `src/index.user.js`。构建从人工维护的 `src/metadata.txt` 和 `package.json` 读取元数据与版本；构建不会修改这些字段。用户已报告其常用 `bgm.tv` 超合金组件配置验收通过；其他域名、页面及视口组合尚未完成浏览器验收，自动化 DOM 测试不代替该验收。
+![example](res/example.webp)
+
+## 安装
+
+1. 可以通过[这个链接](https://bgm.tv/dev/app/7202)在 Bangumi 组件页面启用。
+2. 也可以通过[这个链接](https://raw.githubusercontent.com/imagebuilder1837/bangumi-user-topics/refs/heads/main/src/index.user.js)安装到常见的脚本管理器，需要浏览器装有 [Tampermonkey](https://tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/) 插件。
+
+## 致谢
+
+数据来自 [Bangumi SearchEncore](https://bgmdb.ry.mk/v1/docs#) 镜像索引。
+
+## License
+
+本项目基于 MIT License 开源。详见 [LICENSE](LICENSE) 文件。
