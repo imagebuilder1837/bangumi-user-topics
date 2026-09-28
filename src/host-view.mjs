@@ -1,13 +1,29 @@
-const userPath = /^\/user\/([^/]+)(?:\/(blog|index|friends))?\/?$/;
+const userPath =
+  /^\/user\/([^/]+)(?:\/(blog|index|friends|rev_friends|timeline|mono|groups|wiki)(?:\/[^/]+)*\/?)?$/;
 const collectionPath =
   /^\/(anime|book|music|game|real)\/list\/([^/]+)(?:\/(wish|collect|do|on_hold|dropped))?\/?$/;
 const columnShapes = {
   home: ["columnA", "columnB"],
   blog: ["columnA", "columnB"],
   index: ["columnA", "columnB"],
-  friends: ["columnUserSingle"],
   overview: ["columnA", "columnB"],
+  friends: ["columnUserSingle"],
+  groups: ["columnUserSingle"],
+  timeline: ["columnTimelineA", "columnTimelineB"],
   state: ["columnSubjectBrowserA", "columnSubjectBrowserB"],
+  mono: ["columnA"],
+};
+const evidence = {
+  home: "#columnA #user_home",
+  blog: "#columnA #entry_list",
+  index: "#columnA #timeline.index-list",
+  friends: "#columnUserSingle #memberUserList",
+  groups: "#columnUserSingle #memberGroupList",
+  timeline: "#columnTimelineA #timelineTabs",
+  overview: "#columnA .horizontalOptions",
+  state: "#columnSubjectBrowserA #browserTools",
+  mono: "#columnA .section",
+  wiki: null,
 };
 const css = `
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper > .columns,
@@ -20,7 +36,18 @@ const css = `
 [data-user-topics-view] > .flex-center-v > [role="status"] { min-width: 0; max-width: 100%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
-export function inspectHost(window) {
+
+function pageShape(userMatch, collectionMatch) {
+  if (userMatch) {
+    const segment = userMatch[2];
+    if (!segment) return "home";
+    if (segment === "rev_friends") return "friends";
+    return segment;
+  }
+  return collectionMatch[3] ? "state" : "overview";
+}
+
+function locateProfile(window) {
   const { document, location } = window;
   if (
     !["bgm.tv", "bangumi.tv", "chii.in"].includes(location.hostname) ||
@@ -38,17 +65,13 @@ export function inspectHost(window) {
     return null;
   }
   if (!user || !/^[\p{L}\p{N}_-]+$/u.test(user)) return null;
-  const shape = userMatch
-    ? userMatch[2] || "home"
-    : collectionMatch[3]
-      ? "state"
-      : "overview";
   const wrapper = document.querySelector("#wrapperNeue");
   const profile = wrapper?.querySelector(":scope > #headerProfile");
-  const nav = profile?.querySelector(
-    ":scope > .subjectNav > .navTabsWrapper > .navTabs",
-  );
+  const subjectNav = profile?.querySelector(":scope > .subjectNav");
+  const navWrapper = subjectNav?.querySelector(":scope > .navTabsWrapper");
+  const nav = navWrapper?.querySelector(":scope > .navTabs");
   const blogs = [...(nav?.children || [])].filter((li) => {
+    if (li.dataset?.userTopicsLink !== undefined) return false;
     if (li.tagName !== "LI" || !li.firstElementChild?.matches("a[href]"))
       return false;
     const url = new URL(li.firstElementChild.href);
@@ -60,50 +83,78 @@ export function inspectHost(window) {
   if (blogs.length !== 1) return null;
   const blog = blogs[0].firstElementChild;
   if (new URL(blog.href).pathname.split("/")[2] !== rawKey) return null;
-  const main = profile?.nextElementSibling;
-  const columns = main?.firstElementChild;
-  const footer = columns?.nextElementSibling;
   const header = profile?.querySelector("h1 .name > a");
-  const subnavs = profile?.querySelectorAll(
-    ":scope > .subjectNav > .navSubTabsWrapper",
-  );
-  const originalSub = subnavs?.[0];
-  const evidence = {
-    home: "#columnA #user_home",
-    blog: "#columnA #entry_list",
-    index: "#columnA #timeline.index-list",
-    friends: "#columnUserSingle #memberUserList",
-    overview: "#columnA .horizontalOptions",
-    state: "#columnSubjectBrowserA #browserTools",
-  };
   if (
     !wrapper ||
     !wrapper.contains(document.querySelector("#headerNeue2")) ||
-    !main?.matches(".mainWrapper") ||
-    !columns?.matches(".columns") ||
-    !footer?.matches("#footer") ||
-    columns.parentElement !== footer.parentElement ||
-    !header ||
+    !subjectNav ||
+    !navWrapper ||
     !nav ||
-    !profile.querySelector(":scope > .subjectNav > .navTabsWrapper") ||
-    subnavs.length > 1 ||
-    (originalSub && !originalSub.querySelector(":scope > .navSubTabs")) ||
-    [...columns.children].map((child) => child.id).join(",") !==
-      columnShapes[shape].join(",") ||
-    !columns.querySelector(evidence[shape])
+    !header
   )
     return null;
   return {
+    wrapper,
     profile,
+    subjectNav,
+    navWrapper,
     nav,
     blog,
-    columns,
-    footer,
-    wrapper,
     user,
     nickname: header.textContent.trim(),
+  };
+}
+
+// Entry-level inspection: only what inserting the navigation entry needs.
+// Entry appearance is path-scoped and does not depend on takeover checks.
+export function inspectEntry(window) {
+  return locateProfile(window);
+}
+
+// Takeover-level verification: everything hiding and restoring the host
+// content depends on. Runs at activation time, not at entry insertion, so a
+// failed check can surface visibly instead of silently hiding the entry.
+export function verifyTakeover(window) {
+  const base = locateProfile(window);
+  if (!base) return null;
+  const userMatch = userPath.exec(window.location.pathname);
+  const collectionMatch = collectionPath.exec(window.location.pathname);
+  const shape = pageShape(userMatch, collectionMatch);
+  const main = base.profile.nextElementSibling;
+  // Sibling components may insert bars next to the columns; locate the
+  // columns semantically instead of assuming it is the first child.
+  const columns = main?.querySelector(":scope > .columns");
+  const footer = columns?.nextElementSibling;
+  const subnavs = base.profile.querySelectorAll(
+    ":scope > .subjectNav > .navSubTabsWrapper",
+  );
+  const originalSub = subnavs[0];
+  const ids = columns ? [...columns.children].map((child) => child.id) : [];
+  const shapeOk =
+    shape === "wiki"
+      ? ids.includes("columnA") &&
+        ids.every((id) => id === "columnA" || id === "columnB")
+      : ids.join(",") === columnShapes[shape].join(",");
+  if (
+    !main?.matches(".mainWrapper") ||
+    !columns ||
+    columns.parentElement !== main ||
+    !footer?.matches("#footer") ||
+    columns.parentElement !== footer.parentElement ||
+    !shapeOk ||
+    (evidence[shape] && !columns.querySelector(evidence[shape])) ||
+    subnavs.length > 1 ||
+    (originalSub && !originalSub.querySelector(":scope > .navSubTabs"))
+  )
+    return null;
+  return {
+    ...base,
+    columns,
+    footer,
     originalSub,
-    bodyEvidence: columns.querySelector(evidence[shape]),
+    bodyEvidence: evidence[shape]
+      ? columns.querySelector(evidence[shape])
+      : columns,
   };
 }
 

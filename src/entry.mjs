@@ -1,4 +1,4 @@
-import { inspectHost, createHostView } from "./host-view.mjs";
+import { inspectEntry, verifyTakeover, createHostView } from "./host-view.mjs";
 import { createSearchEncore } from "./search-encore.mjs";
 import { createTopicFeed } from "./topic-feed.mjs";
 import { postsTitle, renderPosts, renderPostsNav } from "./posts-view.mjs";
@@ -14,44 +14,27 @@ export function start(
   window,
   { fetch = window.fetch.bind(window), timers } = {},
 ) {
-  const host = inspectHost(window);
-  if (!host) {
+  const entryHost = inspectEntry(window);
+  if (!entryHost) {
     if (categories[window.location.hash])
       console.warn("用户帖子：当前页面无法安全挂载");
     return;
   }
   const { document } = window;
-  const main = host.columns.parentElement;
-  const navWrapper = host.nav.parentElement;
-  const subjectNav = navWrapper.parentElement;
-  if (host.nav.querySelector("[data-user-topics-link]")) return;
+  if (entryHost.nav.querySelector("[data-user-topics-link]")) return;
   const entry = document.createElement("li");
   entry.dataset.userTopicsLink = "";
   const anchor = document.createElement("a");
   anchor.textContent = "帖子";
   anchor.href = "#posts";
   entry.append(anchor);
-  host.blog.parentElement.after(entry);
-  const view = createHostView(window, host);
-  const feed = createTopicFeed(createSearchEncore(fetch, timers), {
-    user: host.user,
-    origin: window.location.origin,
-    now: timers?.now,
-  });
-  const states = Object.fromEntries(
-    Object.keys(categories).map((hash) => [
-      categories[hash],
-      {
-        page: 1,
-        confirmedPage: 0,
-        current: { loading: false },
-        pending: null,
-        ready: null,
-        started: false,
-        target: 1,
-      },
-    ]),
-  );
+  entryHost.blog.parentElement.after(entry);
+
+  // Entry insertion is path-scoped. The takeover nodes, view, feed and
+  // runtime guards only come together at the first verified activation, so a
+  // page that cannot be verified surfaces a visible error instead of the
+  // entry silently never working.
+  let session = null;
   let explicitNavigation = false;
   anchor.addEventListener("click", (event) => {
     if (
@@ -62,7 +45,7 @@ export function start(
       !event.altKey
     ) {
       explicitNavigation = window.location.hash !== "#posts";
-      if (!explicitNavigation && suspended) route(true);
+      if (!explicitNavigation && !visible) route(true);
     }
   });
   let visible = false,
@@ -74,7 +57,7 @@ export function start(
   function updateTitle(next) {
     if (previousTitle === null) previousTitle = document.title;
     if (ownedTitle === null || document.title === ownedTitle) {
-      ownedTitle = postsTitle(host.nickname, next);
+      ownedTitle = postsTitle(entryHost.nickname, next);
       document.title = ownedTitle;
     }
   }
@@ -83,45 +66,149 @@ export function start(
       document.title = previousTitle;
     previousTitle = ownedTitle = null;
   }
-  const mounted = () =>
-    host.wrapper.matches("#wrapperNeue") &&
-    host.profile.matches("#headerProfile") &&
-    host.profile.parentElement === host.wrapper &&
-    main.matches(".mainWrapper") &&
-    host.profile.nextElementSibling === main &&
-    host.columns.parentElement === main &&
-    host.columns.classList.contains("columns") &&
-    host.footer.matches("#footer") &&
-    host.footer.parentElement === main &&
-    host.bodyEvidence.isConnected &&
-    host.columns.contains(host.bodyEvidence) &&
-    (!host.originalSub ||
-      (host.originalSub.isConnected &&
-        host.originalSub.parentElement === subjectNav)) &&
-    subjectNav.matches(".subjectNav") &&
-    subjectNav.parentElement === host.profile &&
-    navWrapper.matches(".navTabsWrapper") &&
-    navWrapper.parentElement === subjectNav &&
-    host.nav.matches(".navTabs") &&
-    host.nav.parentElement === navWrapper;
+  function establishSession(host) {
+    const view = createHostView(window, host);
+    const feed = createTopicFeed(createSearchEncore(fetch, timers), {
+      user: host.user,
+      origin: window.location.origin,
+      now: timers?.now,
+    });
+    const states = Object.fromEntries(
+      Object.keys(categories).map((hash) => [
+        categories[hash],
+        {
+          page: 1,
+          confirmedPage: 0,
+          current: { loading: false },
+          pending: null,
+          ready: null,
+          started: false,
+          target: 1,
+        },
+      ]),
+    );
+    return { host, view, feed, states, observer: watchHost(host) };
+  }
+  // Re-verification refreshes every takeover node reference; the runtime
+  // guards and the view read them dynamically, the observer must be rebuilt.
+  function rebindSession(verified) {
+    session.observer.disconnect();
+    Object.assign(session.host, verified);
+    session.observer = watchHost(session.host);
+  }
+  function watchHost(host) {
+    const main = host.columns.parentElement;
+    const navWrapper = host.nav.parentElement;
+    const subjectNav = host.subjectNav;
+    const observer = new window.MutationObserver(() => {
+      if (visible && !activeHostValid()) route();
+    });
+    observer.observe(main, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["class", "style"],
+    });
+    observer.observe(navWrapper, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    observer.observe(host.profile, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["id"],
+    });
+    observer.observe(subjectNav, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    observer.observe(host.nav, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    observer.observe(host.footer, {
+      attributes: true,
+      attributeFilter: ["id"],
+    });
+    observer.observe(host.columns, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style"],
+    });
+    observer.observe(host.wrapper, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-user-topics-active", "id"],
+    });
+    if (host.originalSub)
+      observer.observe(host.originalSub, {
+        attributes: true,
+        attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
+      });
+    return observer;
+  }
+  function showErrorPanel() {
+    if (document.querySelector("[data-user-topics-error]")) return;
+    const panel = document.createElement("section");
+    panel.dataset.userTopicsError = "";
+    panel.textContent = "无法安全挂载帖子视图";
+    panel.style.cssText =
+      "max-width: 750px; margin: 6px auto 0; text-align: center;";
+    entryHost.subjectNav.after(panel);
+    console.warn("用户帖子：接管校验未通过，帖子视图未挂载");
+  }
+  function removeErrorPanel() {
+    document.querySelector("[data-user-topics-error]")?.remove();
+  }
+  const mounted = () => {
+    if (!session) return false;
+    const host = session.host;
+    const main = host.columns.parentElement;
+    const navWrapper = host.nav.parentElement;
+    const subjectNav = host.subjectNav;
+    return (
+      host.wrapper.matches("#wrapperNeue") &&
+      host.profile.matches("#headerProfile") &&
+      host.profile.parentElement === host.wrapper &&
+      main.matches(".mainWrapper") &&
+      host.profile.nextElementSibling === main &&
+      host.columns.parentElement === main &&
+      host.columns.classList.contains("columns") &&
+      host.footer.matches("#footer") &&
+      host.footer.parentElement === main &&
+      host.bodyEvidence.isConnected &&
+      host.columns.contains(host.bodyEvidence) &&
+      (!host.originalSub ||
+        (host.originalSub.isConnected &&
+          host.originalSub.parentElement === subjectNav)) &&
+      subjectNav.matches(".subjectNav") &&
+      subjectNav.parentElement === host.profile &&
+      navWrapper.matches(".navTabsWrapper") &&
+      navWrapper.parentElement === subjectNav &&
+      host.nav.matches(".navTabs") &&
+      host.nav.parentElement === navWrapper
+    );
+  };
   const activeHostValid = () =>
     mounted() &&
-    host.wrapper.dataset.userTopicsActive === "on" &&
-    view.intact() &&
-    (!host.originalSub ||
-      host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
-    window.getComputedStyle(host.columns).display === "none" &&
-    (!host.originalSub ||
-      window.getComputedStyle(host.originalSub).display === "none");
+    session.host.wrapper.dataset.userTopicsActive === "on" &&
+    session.view.intact() &&
+    (!session.host.originalSub ||
+      session.host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
+    window.getComputedStyle(session.host.columns).display === "none" &&
+    (!session.host.originalSub ||
+      window.getComputedStyle(session.host.originalSub).display === "none");
   function paint() {
-    if (!visible) return;
+    if (!visible || !session) return;
     const root = document.querySelector("[data-user-topics-view]");
-    const state = states[category];
+    const state = session.states[category];
     const subnav = document.querySelector("[data-user-topics-subnav]");
     if (subnav) renderPostsNav(subnav, category);
     if (root)
       renderPosts(root, {
-        nickname: host.nickname,
+        nickname: session.host.nickname,
         category,
         state: state.current,
         page: state.page,
@@ -133,7 +220,8 @@ export function start(
       });
   }
   function publish(filter) {
-    const state = states[filter];
+    if (!session) return;
+    const state = session.states[filter];
     if (!state.ready || !visible || category !== filter) return;
     if (!activeHostValid()) {
       route();
@@ -149,7 +237,7 @@ export function start(
         target,
       };
     else if (result.items.length) {
-      feed.commit(filter, target, result.items);
+      session.feed.commit(filter, target, result.items);
       state.page = target;
       state.confirmedPage = Math.max(
         state.confirmedPage,
@@ -166,12 +254,12 @@ export function start(
     paint();
   }
   async function load(filter, target, retry = false) {
-    if (!visible || category !== filter) return;
+    if (!visible || !session || category !== filter) return;
     if (!activeHostValid()) {
       route();
       return;
     }
-    const state = states[filter];
+    const state = session.states[filter];
     if (state.pending) return;
     state.started = true;
     state.target = target;
@@ -187,7 +275,7 @@ export function start(
       target,
     };
     paint();
-    const job = feed.prepare(filter, target, retry);
+    const job = session.feed.prepare(filter, target, retry);
     state.pending = job;
     let result;
     try {
@@ -203,7 +291,7 @@ export function start(
   // An explicit click on the entry can reenter after a suspended host recovers.
   function route(explicit = false) {
     const next = categories[window.location.hash];
-    const invalid = !mounted() || (visible && !activeHostValid());
+    const invalid = visible && (!mounted() || !activeHostValid());
     if (!next || invalid) {
       explicitNavigation = false;
       if (visible) {
@@ -211,9 +299,9 @@ export function start(
         suspended = Boolean(next && invalid);
         if (suspended) takeoverEpoch++;
         category = null;
-        feed.setForeground(null);
+        session.feed.setForeground(null);
         if (suspended)
-          for (const state of Object.values(states)) {
+          for (const state of Object.values(session.states)) {
             if (state.ready || state.pending || state.current.loading)
               state.started = false;
             state.ready = null;
@@ -221,13 +309,29 @@ export function start(
             state.current = { ...state.current, loading: false };
           }
         anchor.classList.remove("focus");
-        view.hide();
+        session.view.hide();
         restoreTitle();
-      } else if (!next) suspended = false;
+      } else if (!next) {
+        suspended = false;
+        removeErrorPanel();
+      }
       return;
     }
     if (suspended && !explicit && !explicitNavigation) return;
-    suspended = false;
+    if (!visible) {
+      // Takeover still needs a full safety check at activation time; a failed
+      // check shows the mount error panel and leaves the host untouched.
+      const verified = verifyTakeover(window);
+      if (!verified) {
+        suspended = false;
+        showErrorPanel();
+        return;
+      }
+      removeErrorPanel();
+      suspended = false;
+      if (!session) session = establishSession(verified);
+      else rebindSession(verified);
+    } else suspended = false;
     if (visible && category === next) {
       explicitNavigation = false;
       return;
@@ -235,65 +339,19 @@ export function start(
     visible = true;
     category = next;
     updateTitle(next);
-    feed.setForeground(next);
-    view.show();
+    session.feed.setForeground(next);
+    session.view.show();
     anchor.classList.add("focus");
     paint();
     explicitNavigation = false;
-    if (states[next].ready) publish(next);
-    else if (!states[next].started) load(next, states[next].page);
-    else if (states[next].pending) {
-      states[next].current = { ...states[next].current, loading: true };
+    const state = session.states[next];
+    if (state.ready) publish(next);
+    else if (!state.started) load(next, state.page);
+    else if (state.pending) {
+      state.current = { ...state.current, loading: true };
       paint();
     }
   }
-  const observer = new window.MutationObserver(() => {
-    if (visible && !activeHostValid()) route();
-  });
-  observer.observe(main, {
-    childList: true,
-    attributes: true,
-    attributeFilter: ["class", "style"],
-  });
-  observer.observe(navWrapper, {
-    childList: true,
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  observer.observe(host.profile, {
-    childList: true,
-    attributes: true,
-    attributeFilter: ["id"],
-  });
-  observer.observe(subjectNav, {
-    childList: true,
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  observer.observe(host.nav, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  observer.observe(host.footer, {
-    attributes: true,
-    attributeFilter: ["id"],
-  });
-  observer.observe(host.columns, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["class", "style"],
-  });
-  observer.observe(host.wrapper, {
-    childList: true,
-    attributes: true,
-    attributeFilter: ["data-user-topics-active", "id"],
-  });
-  if (host.originalSub)
-    observer.observe(host.originalSub, {
-      attributes: true,
-      attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
-    });
   window.addEventListener("hashchange", () => route());
   route();
 }

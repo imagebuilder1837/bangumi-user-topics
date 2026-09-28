@@ -166,7 +166,7 @@ test("a recovered host reentry on the same hash does not scroll", async () => {
   app.dom.window.close();
 });
 
-test("a still-broken host keeps the same-hash click suspended without scrolling", async () => {
+test("a still-broken host shows the mount error on the same-hash click without scrolling", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
   const columns = app.document.querySelector(".columns");
   await tick();
@@ -177,6 +177,11 @@ test("a still-broken host keeps the same-hash click suspended without scrolling"
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   assert.equal(app.scrolls.length, before);
+  assert.equal(
+    app.document.querySelector("[data-user-topics-error]")?.textContent,
+    "无法安全挂载帖子视图",
+  );
+  assert.equal(app.window.getComputedStyle(columns).display, "block");
   app.dom.window.close();
 });
 
@@ -298,12 +303,22 @@ test("rejects a foreign-origin blog anchor even if its path resembles the target
   app.dom.window.close();
 });
 
-test("missing mounting structure never inserts entry or requests even with direct hash", () => {
+test("missing mounting structure keeps the entry but fails visibly without requests", () => {
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts/group",
     markup: html.replace('class="columns columns-center"', 'class="missing"'),
   });
-  assert.equal(app.document.querySelector("[data-user-topics-link]"), null);
+  assert.equal(
+    app.document.querySelectorAll("[data-user-topics-link]").length,
+    1,
+  );
   assert.equal(app.requests.length, 0);
+  assert.equal(
+    app.document.querySelector("[data-user-topics-error]")?.textContent,
+    "无法安全挂载帖子视图",
+  );
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);
+  assert.equal(app.document.querySelector("[data-user-topics-active]"), null);
   app.dom.window.close();
 });

@@ -31,13 +31,19 @@
 | 页面 | 正文 | 侧栏 | 二级导航 |
 | --- | --- | --- | --- |
 | 用户主页 `/user/{key}` | `#columnA.column` | `#columnB.column` | 无 |
-| 日志 `/user/{key}/blog` | `#columnA.column.column-main` | `#columnB.column.column-side-md` | 无 |
-| 目录 `/user/{id}/index`（含 `/collect` 等状态） | `#columnA.column.column-main` | `#columnB.column.column-side-md` | 有 |
+| 日志 `/user/{key}/blog`（含 `/blog/tag/{tag}`） | `#columnA.column.column-main` | `#columnB.column.column-side-md` | 无 |
+| 目录 `/user/{id}/index`（含 `/collect`） | `#columnA.column.column-main` | `#columnB.column.column-side-md` | 有 |
+| 人物 `/user/{key}/mono`（含 `/character`、`/person`） | `#columnA.column`（内含 `.section`，空用户也在） | 无 | 有 |
+| 小组 `/user/{key}/groups` | `#columnUserSingle.column`（含 `#memberGroupList`，空用户也在） | 无 | 无 |
 | 好友 `/user/{key}/friends` | `#columnUserSingle.column` | 无 | 无 |
 | 收藏概览 `/{type}/list/{key}` | `#columnA.column` | `#columnB.column` | 有 |
 | 收藏状态 `/{type}/list/{key}/{status}` | `#columnSubjectBrowserA.column` | `#columnSubjectBrowserB.column` | 有 |
-| 时间胶囊 `/user/{key}/timeline` | `#columnTimelineA.column` | `#columnTimelineB.column` | 无 |
+| 时间胶囊 `/user/{key}/timeline` | `#columnTimelineA.column`（含 `#timelineTabs`） | `#columnTimelineB.column` | 无 |
 | 反向好友 `/user/{key}/rev_friends` | `#columnUserSingle.column` | 无 | 无 |
+| 维基 `/user/{key}/wiki`（含十余个子路径） | `#columnA.column` 恒在；`#columnB` 及内容随用户数据有无，无稳定锚点 | 可有可无 | 有 |
+| 天窗 `/user/{key}/doujin` | 无 `.columns` 结构 | — | — |
+
+- 登录态差异：匿名抓取不含的兄弟组件内容会出现在上述页面（如 friend-sorter 在 friends/rev_friends 的 `.mainWrapper` 内、`.columns` 之前插入排序条）；以实时页面为准。
 
 - 正文列没有统一 ID 或统一宽度模型：不得全站硬编码 `#columnA`，也不能为套样式复制宿主 ID 或给自有 sibling 加 column class 就假定宽度正确。
 

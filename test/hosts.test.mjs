@@ -20,12 +20,23 @@ const shapes = {
     '<div class="columns clearit"><div id="columnA" class="column"><h2 class="title">收藏概览</h2><div class="horizontalOptions clearit"></div></div><div id="columnB" class="column"></div></div>',
   state:
     '<div class="columns clearit"><div id="columnSubjectBrowserA" class="column"><div id="browserTools"></div></div><div id="columnSubjectBrowserB" class="column">collection statistics</div></div>',
+  timeline:
+    '<div class="columns clearit"><div id="columnTimelineA" class="column"><div id="columnTimelineInnerWrapper" class="clearit"><ul id="timelineTabs" class="timelineTabs clearit"><li><input></li></ul></div></div><div id="columnTimelineB" class="column">timeline sidebar</div></div>',
+  groups:
+    '<div class="columns clearit"><div id="columnUserSingle" class="column"><ul id="memberGroupList" class="browserMedium"><li><input></li></ul></div></div>',
+  mono: '<div class="columns clearit"><div id="columnA" class="column"><div class="section"><input></div></div></div>',
+  wiki: '<div class="columns clearit"><div id="columnA" class="column">wiki content</div></div>',
+  wikiWide:
+    '<div class="columns clearit"><div id="columnA" class="column">wiki content</div><div id="columnB" class="column">wiki sidebar</div></div>',
+  blog: null,
 };
 function markup(shape, subnav = false) {
-  const source = blog.replace(
-    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
-    shapes[shape],
-  );
+  const source = shapes[shape]
+    ? blog.replace(
+        /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
+        shapes[shape],
+      )
+    : blog;
   return subnav
     ? source
         .replace('<div class="navTabsWrapper">', '<div class="navTabsWrapper">')
@@ -304,18 +315,34 @@ test("external changes to the original subnavigation marker end takeover without
   app.dom.window.close();
 });
 
-test("unknown or mismatched host structures do not insert an entry or request", () => {
+test("the entry follows the matched path even where takeover cannot be verified", () => {
   for (const [path, shape] of [
     ["/user/sai#posts", "home"],
     ["/user/sai/timeline#posts", "home"],
     ["/anime/list/sai/wish#posts", "overview"],
     ["/anime/list/sai#posts", "state"],
-    ["/user/other/friends#posts", "friends"],
   ]) {
     const source =
       path === "/user/sai#posts"
         ? markup(shape).replace('<div id="user_home"><input></div>', "")
         : undefined;
+    const app = open(path, shape, { source });
+    assert.equal(
+      app.document.querySelectorAll("[data-user-topics-link]").length,
+      1,
+      path,
+    );
+    assert.equal(app.requests.length, 0, path);
+    app.dom.window.close();
+  }
+});
+
+test("identity mismatch and out-of-scope paths never insert an entry", () => {
+  for (const [path, shape, source] of [
+    ["/user/other/friends#posts", "friends", undefined],
+    ["/user/sai/doujin#posts", "home", undefined],
+    ["/user/sai/whatever#posts", "home", undefined],
+  ]) {
     const app = open(path, shape, { source });
     assert.equal(
       app.document.querySelector("[data-user-topics-link]"),
@@ -325,4 +352,132 @@ test("unknown or mismatched host structures do not insert an entry or request", 
     assert.equal(app.requests.length, 0, path);
     app.dom.window.close();
   }
+});
+
+test("every matched user page shows the entry before any takeover", () => {
+  for (const [path, shape] of [
+    ["/user/sai/mono", "mono"],
+    ["/user/sai/mono/character", "mono"],
+    ["/user/sai/mono/person", "mono"],
+    ["/user/sai/groups", "groups"],
+    ["/user/sai/wiki", "wiki"],
+    ["/user/sai/wiki/character_cast", "wiki"],
+    ["/user/sai/timeline", "timeline"],
+    ["/user/sai/rev_friends", "friends"],
+    ["/user/sai/index/collect", "index"],
+    ["/user/sai/blog/tag/alter", "blog"],
+  ]) {
+    const app = open(path, shape);
+    assert.equal(
+      app.document.querySelectorAll("[data-user-topics-link]").length,
+      1,
+      path,
+    );
+    assert.equal(app.requests.length, 0, path);
+    app.dom.window.close();
+  }
+});
+
+test("newly scoped pages take over and restore like the original shapes", async () => {
+  for (const [path, shape, subnav] of [
+    ["/user/sai/timeline", "timeline", false],
+    ["/user/sai/groups", "groups", false],
+    ["/user/sai/mono", "mono", true],
+    ["/user/sai/wiki", "wiki", true],
+    ["/user/sai/wiki/character_cast", "wikiWide", true],
+    ["/user/sai/rev_friends", "friends", false],
+    ["/user/sai/index/collect", "index", true],
+    ["/user/sai/blog/tag/alter", "blog", false],
+  ]) {
+    const app = open(`${path}#posts/group`, shape, { subnav });
+    await tick();
+    const d = app.document;
+    const columns = d.querySelector(".columns");
+    const footer = d.querySelector("#footer");
+    assert.ok(app.requests[0], path);
+    assert.equal(!!d.querySelector("[data-user-topics-view]"), true, path);
+    assert.equal(app.window.getComputedStyle(columns).display, "none", path);
+    app.window.location.hash = "#other";
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    assert.equal(d.querySelector("[data-user-topics-view]"), null, path);
+    assert.equal(d.querySelector(".columns"), columns, path);
+    assert.equal(d.querySelector("#footer"), footer, path);
+    assert.equal(
+      d.querySelector(".columns").parentElement.querySelector(".columns"),
+      columns,
+      path,
+    );
+    app.dom.window.close();
+  }
+});
+
+test("a sibling component bar before the columns neither blocks takeover nor gets hidden", async () => {
+  const source = markup("friends").replace(
+    '<div class="columns clearit"><div id="columnUserSingle"',
+    '<div class="friend-sorter-bar">排序条</div><div class="columns clearit"><div id="columnUserSingle"',
+  );
+  const app = open("/user/sai/friends#posts/group", "friends", { source });
+  await tick();
+  const d = app.document;
+  const bar = d.querySelector(".friend-sorter-bar");
+  const columns = d.querySelector(".columns");
+  assert.equal(bar.previousElementSibling, null);
+  assert.ok(app.requests[0]);
+  assert.equal(!!d.querySelector("[data-user-topics-view]"), true);
+  assert.equal(app.window.getComputedStyle(columns).display, "none");
+  assert.notEqual(app.window.getComputedStyle(bar).display, "none");
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(d.querySelector(".columns"), columns);
+  assert.equal(bar.isConnected, true);
+  app.dom.window.close();
+});
+
+test("an unverifiable page keeps the entry but surfaces a visible mount error on demand", async () => {
+  const source = markup("home").replace(
+    '<div id="user_home"><input></div>',
+    "",
+  );
+  const app = open("/user/sai#posts", "home", { source });
+  const d = app.document;
+  await tick();
+  const columns = d.querySelector(".columns");
+  assert.equal(app.requests.length, 0);
+  const panel = d.querySelector("[data-user-topics-error]");
+  assert.equal(panel?.textContent, "无法安全挂载帖子视图");
+  assert.equal(panel.style.textAlign, "center");
+  assert.equal(panel.style.margin, "6px auto 0px");
+  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
+  assert.equal(d.querySelector("[data-user-topics-view]"), null);
+  assert.equal(d.querySelector("[data-user-topics-subnav]"), null);
+  d.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.equal(d.querySelectorAll("[data-user-topics-error]").length, 1);
+  assert.equal(app.requests.length, 0);
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(d.querySelector("[data-user-topics-error]"), null);
+  app.dom.window.close();
+});
+
+test("repairing the structure lets the same-hash entry click mount the view", async () => {
+  const source = markup("home").replace(
+    '<div id="user_home"><input></div>',
+    "",
+  );
+  const app = open("/user/sai#posts", "home", { source });
+  const d = app.document;
+  await tick();
+  assert.equal(!!d.querySelector("[data-user-topics-error]"), true);
+  const columnA = d.querySelector("#columnA");
+  const home = d.createElement("div");
+  home.id = "user_home";
+  home.innerHTML = "<input>";
+  columnA.prepend(home);
+  d.querySelector("[data-user-topics-link] a").click();
+  await tick();
+  assert.equal(d.querySelector("[data-user-topics-error]"), null);
+  assert.ok(app.requests[0]);
+  assert.equal(!!d.querySelector("[data-user-topics-view]"), true);
+  app.dom.window.close();
 });
