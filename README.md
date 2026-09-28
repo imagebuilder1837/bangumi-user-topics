@@ -4,4 +4,4 @@
 
 数据来自第三方 [SearchEncore](https://bgmdb.ry.mk) 镜像索引；仅进入帖子视图时查询。没有找到已收录的帖子不表示用户从未发帖，动态索引也不能保证历史完整。
 
-运行 `npm install && npm run build && npm run check`，然后在 userscript 管理器中安装生成的 `src/index.user.js`。构建从人工维护的 `src/metadata.txt` 和 `package.json` 读取元数据与版本；构建不会修改这些字段。登录态、组件共存、跨域实际安装及响应式视觉验收尚待真实浏览器验证，自动化 DOM 测试不代替该验收。
+运行 `npm install && npm run build && npm run check`，然后在 userscript 管理器中安装生成的 `src/index.user.js`。构建从人工维护的 `src/metadata.txt` 和 `package.json` 读取元数据与版本；构建不会修改这些字段。用户已报告其常用 `bgm.tv` 超合金组件配置验收通过；其他域名、页面及视口组合尚未完成浏览器验收，自动化 DOM 测试不代替该验收。

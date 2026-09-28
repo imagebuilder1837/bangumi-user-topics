@@ -1,6 +1,6 @@
 # 维护源导航
 
-本仓库已有日志宿主页的三分类合并分页与异步调度；其它已观察宿主页的接入由 `host-view.mjs` 守卫。真实浏览器验收仍待完成；构建使用人工维护的 metadata 模板。
+本仓库已有日志宿主页的三分类合并分页与异步调度；其它已观察宿主页的接入由 `host-view.mjs` 守卫。用户已报告其常用 `bgm.tv` 配置验收通过；其余浏览器矩阵未验证（见 [`review-implementation-boundaries.md`](review-implementation-boundaries.md)）。构建使用人工维护的 metadata 模板。
 
 行为变更从维护源开始，不要默认读取生成的 `src/index.user.js`。仅为构建排障、审查或最终 artifact 验收时定向检查生成文件。
 
