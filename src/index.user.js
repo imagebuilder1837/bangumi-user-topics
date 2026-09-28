@@ -44,8 +44,8 @@
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
 [data-user-topics-view] { width: 100%; max-width: 750px; margin: 0 auto; padding-top: 10px; min-height: 200px; box-sizing: border-box; }
-[data-user-topics-view] > .flex-center-v { flex-wrap: wrap; column-gap: 12px; }
-[data-user-topics-view] > .flex-center-v > [role="status"] { min-width: 0; max-width: 100%; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
+[data-user-topics-view] > .flex-center-v { flex-wrap: wrap; justify-content: flex-start; column-gap: .6em; }
+[data-user-topics-view] > .flex-center-v > [role="status"] { color: #999; min-width: 0; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
 
@@ -765,9 +765,9 @@
     root.replaceChildren();
     const header = el(d, "div", "flex-center-v");
     const title = el(d, "h2", "title", postsTitle(nickname, category));
-    const status = el(d, "div");
+    const status = el(d, "span");
     status.setAttribute("role", "status");
-    const message = el(d, "small", "grey");
+    const message = d.createTextNode("");
     status.append(message);
     header.append(title, status);
     root.append(header);

@@ -2,29 +2,34 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
 
-test("loading and empty states sit beside the title in native small grey text", async () => {
+test("loading and empty states inherit page text size beside the title", async () => {
   const app = setup();
   enter(app);
   const header = app.document.querySelector(
     "[data-user-topics-view] > .flex-center-v",
   );
   assert.equal(header?.firstElementChild.matches("h2.title"), true);
-  const status = header.querySelector(':scope > [role="status"]');
   assert.equal(
-    status?.querySelector("small.grey")?.textContent,
-    "正在加载帖子…",
+    app.window.getComputedStyle(header).justifyContent,
+    "flex-start",
   );
+  const status = header.querySelector(':scope > [role="status"]');
+  assert.equal(status?.tagName, "SPAN");
+  assert.equal(status?.firstChild?.textContent, "正在加载帖子…");
+  assert.equal(app.window.getComputedStyle(status).color, "rgb(153, 153, 153)");
+  assert.equal(app.window.getComputedStyle(status).textAlign, "left");
   assert.equal(header.nextElementSibling, null);
   await tick();
   assert.equal(status.isConnected, false);
   const empty = app.document.querySelector(
-    '[data-user-topics-view] > .flex-center-v > [role="status"] small.grey',
+    '[data-user-topics-view] > .flex-center-v > [role="status"]',
   );
   assert.equal(empty?.textContent, "没有找到已收录的帖子");
+  assert.equal(empty?.tagName, "SPAN");
   app.dom.window.close();
 });
 
-test("long errors stay complete when the title status wraps on narrow screens", async () => {
+test("long errors stay complete in the left-aligned wrapped title status", async () => {
   const longError = "connection".repeat(32);
   const app = setup({ respond: () => Promise.reject(Error(longError)) });
   enter(app);
@@ -33,9 +38,14 @@ test("long errors stay complete when the title status wraps on narrow screens", 
     "[data-user-topics-view] > .flex-center-v",
   );
   const status = header.querySelector('[role="status"]');
-  assert.equal(status.querySelector("small.grey").textContent, longError);
+  assert.equal(status.firstChild.textContent, longError);
   assert.equal(app.window.getComputedStyle(header).flexWrap, "wrap");
+  assert.equal(
+    app.window.getComputedStyle(header).justifyContent,
+    "flex-start",
+  );
   assert.equal(app.window.getComputedStyle(status).overflowWrap, "anywhere");
+  assert.equal(app.window.getComputedStyle(status).textAlign, "left");
   assert.equal(status.querySelector("a.chiiBtn > span").textContent, "重试");
   app.dom.window.close();
 });
@@ -208,14 +218,11 @@ test("a confirmed page scrolls before loading and stays there after failure and 
   const status = app.document.querySelector(
     '[data-user-topics-view] > .flex-center-v > [role="status"]',
   );
-  assert.match(
-    status.querySelector("small.grey").textContent,
-    /temporary failure/,
-  );
+  assert.match(status.firstChild.textContent, /temporary failure/);
   const retry = status.querySelector("a.chiiBtn > span")?.parentElement;
   assert.equal(retry?.textContent, "重试");
   assert.equal(retry?.getAttribute("href"), "#posts/group");
-  assert.equal(retry?.closest("small.grey"), null);
+  assert.equal(retry?.parentElement, status);
   assert.deepEqual(app.scrolls, [[0, 0]]);
   fail = false;
   retry.click();

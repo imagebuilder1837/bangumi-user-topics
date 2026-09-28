@@ -55,9 +55,9 @@ export function renderPosts(
   root.replaceChildren();
   const header = el(d, "div", "flex-center-v");
   const title = el(d, "h2", "title", postsTitle(nickname, category));
-  const status = el(d, "div");
+  const status = el(d, "span");
   status.setAttribute("role", "status");
-  const message = el(d, "small", "grey");
+  const message = d.createTextNode("");
   status.append(message);
   header.append(title, status);
   root.append(header);

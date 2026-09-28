@@ -334,7 +334,7 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
     '[data-user-topics-view] > .flex-center-v > [role="status"]',
   );
   assert.match(
-    status.querySelector("small.grey").textContent,
+    status.firstChild.textContent,
     /无法确认是否还有下一页：temporary failure/,
   );
   assert.equal(status.querySelector("a.chiiBtn > span").textContent, "重试");
