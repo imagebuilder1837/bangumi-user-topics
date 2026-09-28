@@ -126,15 +126,15 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
           }),
   });
   await tick();
-  const columns = app.document.querySelector(".columns");
-  columns.classList.remove("columns");
+  const main = app.document.querySelector(".columns").parentElement;
+  main.classList.remove("mainWrapper");
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   assert.equal(app.window.location.hash, "#posts/group");
   deliver();
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  columns.classList.add("columns");
+  main.classList.add("mainWrapper");
   app.window.location.hash = "#posts";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   await tick();
@@ -151,13 +151,13 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
 
 test("a recovered host reentry on the same hash does not scroll", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
-  const columns = app.document.querySelector(".columns");
+  const main = app.document.querySelector(".columns").parentElement;
   await tick();
   assert.ok(app.document.querySelector("[data-user-topics-view]"));
-  columns.classList.remove("columns");
+  main.classList.remove("mainWrapper");
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  columns.classList.add("columns");
+  main.classList.add("mainWrapper");
   const before = app.scrolls.length;
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();
@@ -168,9 +168,9 @@ test("a recovered host reentry on the same hash does not scroll", async () => {
 
 test("a still-broken host shows the mount error on the same-hash click without scrolling", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
-  const columns = app.document.querySelector(".columns");
+  const main = app.document.querySelector(".columns").parentElement;
   await tick();
-  columns.classList.remove("columns");
+  main.classList.remove("mainWrapper");
   await tick();
   const before = app.scrolls.length;
   app.document.querySelector("[data-user-topics-link] a").click();
@@ -181,7 +181,10 @@ test("a still-broken host shows the mount error on the same-hash click without s
     app.document.querySelector("[data-user-topics-error]")?.textContent,
     "无法安全挂载帖子视图",
   );
-  assert.equal(app.window.getComputedStyle(columns).display, "block");
+  assert.equal(
+    app.window.getComputedStyle(app.document.querySelector(".columns")).display,
+    "block",
+  );
   app.dom.window.close();
 });
 
@@ -207,11 +210,11 @@ test("reentry after recovery repaints the cached page without new requests", asy
   await tick();
   assert.equal(app.requests.length, 4);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
-  const columns = app.document.querySelector(".columns");
-  columns.classList.remove("columns");
+  const main = app.document.querySelector(".columns").parentElement;
+  main.classList.remove("mainWrapper");
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  columns.classList.add("columns");
+  main.classList.add("mainWrapper");
   const before = app.scrolls.length;
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();

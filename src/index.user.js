@@ -37,31 +37,8 @@
     /^\/user\/([^/]+)(?:\/(blog|index|friends|rev_friends|timeline|mono|groups|wiki)(?:\/[^/]+)*\/?)?$/;
   const collectionPath =
     /^\/(anime|book|music|game|real)\/list\/([^/]+)(?:\/(wish|collect|do|on_hold|dropped))?\/?$/;
-  const columnShapes = {
-    home: ["columnA", "columnB"],
-    blog: ["columnA", "columnB"],
-    index: ["columnA", "columnB"],
-    overview: ["columnA", "columnB"],
-    friends: ["columnUserSingle"],
-    groups: ["columnUserSingle"],
-    timeline: ["columnTimelineA", "columnTimelineB"],
-    state: ["columnSubjectBrowserA", "columnSubjectBrowserB"],
-    mono: ["columnA"],
-  };
-  const evidence = {
-    home: "#columnA #user_home",
-    blog: "#columnA #entry_list",
-    index: "#columnA #timeline.index-list",
-    friends: "#columnUserSingle #memberUserList",
-    groups: "#columnUserSingle #memberGroupList",
-    timeline: "#columnTimelineA #timelineTabs",
-    overview: "#columnA .horizontalOptions",
-    state: "#columnSubjectBrowserA #browserTools",
-    mono: "#columnA .section",
-    wiki: null,
-  };
   const css = `
-[data-user-topics-active="on"] > #headerProfile + .mainWrapper > .columns,
+[data-user-topics-active="on"] > #headerProfile + .mainWrapper > :not(#footer):not(#footer ~ *):not([data-user-topics-view]),
 [data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper[data-user-topics-original-subnav="on"] { display: none !important; }
 [data-user-topics-active="on"] { min-width: 0 !important; }
 [data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
@@ -72,14 +49,36 @@
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
 
-  function pageShape(userMatch, collectionMatch) {
-    if (userMatch) {
-      const segment = userMatch[2];
-      if (!segment) return "home";
-      if (segment === "rev_friends") return "friends";
-      return segment;
-    }
-    return collectionMatch[3] ? "state" : "overview";
+  // Takeover-level verification: everything hiding and restoring the host
+  // content depends on. Runs at activation time, not at entry insertion, so a
+  // failed check can surface visibly instead of silently hiding the entry.
+  // The takeover does not enumerate known page shapes: any page that offers a
+  // .mainWrapper body with a #footer boundary can be taken over safely, and
+  // everything before the footer is hidden and later restored as a whole.
+  function verifyTakeover(window) {
+    const base = locateProfile(window);
+    if (!base) return null;
+    const main = base.profile.nextElementSibling;
+    // Sibling components may insert bars next to the columns; locate the
+    // columns semantically instead of assuming it is the first child.
+    const columns = main?.querySelector(":scope > .columns");
+    const footer = main?.querySelector(":scope > #footer");
+    // Components may add their own subnavigation wrappers; the first wrapper
+    // that actually carries a subnavigation list is captured for hiding, extra
+    // wrappers are tolerated and left visible.
+    const originalSub = [
+      ...base.profile.querySelectorAll(
+        ":scope > .subjectNav > .navSubTabsWrapper",
+      ),
+    ].find((wrapper) => wrapper.querySelector(":scope > .navSubTabs"));
+    if (
+      !main?.matches(".mainWrapper") ||
+      !columns ||
+      !footer ||
+      footer.parentElement !== main
+    )
+      return null;
+    return { ...base, columns, footer, originalSub: originalSub || null };
   }
 
   function locateProfile(window) {
@@ -144,53 +143,6 @@
   // Entry appearance is path-scoped and does not depend on takeover checks.
   function inspectEntry(window) {
     return locateProfile(window);
-  }
-
-  // Takeover-level verification: everything hiding and restoring the host
-  // content depends on. Runs at activation time, not at entry insertion, so a
-  // failed check can surface visibly instead of silently hiding the entry.
-  function verifyTakeover(window) {
-    const base = locateProfile(window);
-    if (!base) return null;
-    const userMatch = userPath.exec(window.location.pathname);
-    const collectionMatch = collectionPath.exec(window.location.pathname);
-    const shape = pageShape(userMatch, collectionMatch);
-    const main = base.profile.nextElementSibling;
-    // Sibling components may insert bars next to the columns; locate the
-    // columns semantically instead of assuming it is the first child.
-    const columns = main?.querySelector(":scope > .columns");
-    const footer = columns?.nextElementSibling;
-    const subnavs = base.profile.querySelectorAll(
-      ":scope > .subjectNav > .navSubTabsWrapper",
-    );
-    const originalSub = subnavs[0];
-    const ids = columns ? [...columns.children].map((child) => child.id) : [];
-    const shapeOk =
-      shape === "wiki"
-        ? ids.includes("columnA") &&
-          ids.every((id) => id === "columnA" || id === "columnB")
-        : ids.join(",") === columnShapes[shape].join(",");
-    if (
-      !main?.matches(".mainWrapper") ||
-      !columns ||
-      columns.parentElement !== main ||
-      !footer?.matches("#footer") ||
-      columns.parentElement !== footer.parentElement ||
-      !shapeOk ||
-      (evidence[shape] && !columns.querySelector(evidence[shape])) ||
-      subnavs.length > 1 ||
-      (originalSub && !originalSub.querySelector(":scope > .navSubTabs"))
-    )
-      return null;
-    return {
-      ...base,
-      columns,
-      footer,
-      originalSub,
-      bodyEvidence: evidence[shape]
-        ? columns.querySelector(evidence[shape])
-        : columns,
-    };
   }
 
   function createHostView(window, host) {
@@ -327,11 +279,15 @@
       }
     }
     function intact() {
+      if (!root || root.parentElement !== host.footer.parentElement)
+        return false;
+      // Nodes inserted between the root and the footer stay hidden by the
+      // takeover CSS, so only the relative order matters, not adjacency.
       return (
-        root?.parentElement === host.footer.parentElement &&
-        root.previousElementSibling === host.columns &&
-        root.nextElementSibling === host.footer &&
-        subnav?.parentElement === host.nav.parentElement.parentElement
+        !!(
+          root.compareDocumentPosition(host.footer) &
+          window.Node.DOCUMENT_POSITION_FOLLOWING
+        ) && subnav?.parentElement === host.nav.parentElement.parentElement
       );
     }
     return { show, hide, intact };
@@ -1088,11 +1044,8 @@
         main.matches(".mainWrapper") &&
         host.profile.nextElementSibling === main &&
         host.columns.parentElement === main &&
-        host.columns.classList.contains("columns") &&
         host.footer.matches("#footer") &&
         host.footer.parentElement === main &&
-        host.bodyEvidence.isConnected &&
-        host.columns.contains(host.bodyEvidence) &&
         (!host.originalSub ||
           (host.originalSub.isConnected &&
             host.originalSub.parentElement === subjectNav)) &&

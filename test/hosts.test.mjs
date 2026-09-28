@@ -316,23 +316,37 @@ test("external changes to the original subnavigation marker end takeover without
 });
 
 test("the entry follows the matched path even where takeover cannot be verified", () => {
-  for (const [path, shape] of [
-    ["/user/sai#posts", "home"],
-    ["/user/sai/timeline#posts", "home"],
-    ["/anime/list/sai/wish#posts", "overview"],
-    ["/anime/list/sai#posts", "state"],
-  ]) {
-    const source =
-      path === "/user/sai#posts"
-        ? markup(shape).replace('<div id="user_home"><input></div>', "")
-        : undefined;
-    const app = open(path, shape, { source });
+  const stripped = blog.replace(
+    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
+    "",
+  );
+  for (const path of ["/user/sai#posts", "/user/sai/timeline#posts"]) {
+    const app = open(path, "home", { source: stripped });
     assert.equal(
       app.document.querySelectorAll("[data-user-topics-link]").length,
       1,
       path,
     );
     assert.equal(app.requests.length, 0, path);
+    app.dom.window.close();
+  }
+});
+
+test("path and markup disagreement no longer blocks takeover", async () => {
+  for (const [path, shape, source] of [
+    ["/user/sai/timeline#posts", "home", undefined],
+    ["/anime/list/sai/wish#posts", "overview", undefined],
+    ["/anime/list/sai#posts", "state", undefined],
+    [
+      "/user/sai#posts",
+      "home",
+      markup("home").replace('<div id="user_home"><input></div>', ""),
+    ],
+  ]) {
+    const app = open(path, shape, { source });
+    await tick();
+    assert.ok(app.requests[0], path);
+    assert.ok(app.document.querySelector("[data-user-topics-view]"), path);
     app.dom.window.close();
   }
 });
@@ -411,7 +425,7 @@ test("newly scoped pages take over and restore like the original shapes", async 
   }
 });
 
-test("a sibling component bar before the columns neither blocks takeover nor gets hidden", async () => {
+test("a sibling component bar before the columns is hidden during takeover and restored on exit", async () => {
   const source = markup("friends").replace(
     '<div class="columns clearit"><div id="columnUserSingle"',
     '<div class="friend-sorter-bar">排序条</div><div class="columns clearit"><div id="columnUserSingle"',
@@ -425,29 +439,73 @@ test("a sibling component bar before the columns neither blocks takeover nor get
   assert.ok(app.requests[0]);
   assert.equal(!!d.querySelector("[data-user-topics-view]"), true);
   assert.equal(app.window.getComputedStyle(columns).display, "none");
-  assert.notEqual(app.window.getComputedStyle(bar).display, "none");
+  assert.equal(app.window.getComputedStyle(bar).display, "none");
   app.window.location.hash = "#other";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   assert.equal(d.querySelector(".columns"), columns);
   assert.equal(bar.isConnected, true);
+  assert.notEqual(app.window.getComputedStyle(bar).display, "none");
+  app.dom.window.close();
+});
+
+test("a component column inside the columns does not block takeover", async () => {
+  // bangumi-friend-tag inserts its panel column inside .columns after
+  // #columnUserSingle; takeover only needs the footer boundary, so the
+  // friend-tag scenario must mount.
+  const app = open("/user/sai/friends", "friends");
+  const columns = app.document.querySelector(".columns");
+  const panel = app.document.createElement("div");
+  panel.id = "friendTagPanelColumn";
+  panel.className = "column";
+  columns.querySelector("#columnUserSingle").after(panel);
+  enter(app);
+  await tick();
+  const d = app.document;
+  assert.ok(app.requests[0]);
+  assert.equal(!!d.querySelector("[data-user-topics-view]"), true);
+  assert.equal(d.querySelector("[data-user-topics-error]"), null);
+  assert.equal(app.window.getComputedStyle(columns).display, "none");
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(d.querySelector(".columns"), columns);
+  assert.equal(panel.isConnected, true);
+  app.dom.window.close();
+});
+
+test("an extension subnavigation before the native one does not block takeover", async () => {
+  const source = markup("state", true).replace(
+    '<div class="navSubTabsWrapper">',
+    '<div class="navSubTabsWrapper"><ul class="navSubTabs"><li><a href="#ext">扩展导航</a></li></ul></div><div class="navSubTabsWrapper">',
+  );
+  const app = open("/anime/list/sai/collect#posts/group", "state", { source });
+  await tick();
+  const d = app.document;
+  const extension = d.querySelector(".navSubTabsWrapper");
+  const native = extension.nextElementSibling;
+  assert.ok(app.requests[0]);
+  assert.ok(d.querySelector("[data-user-topics-view]"));
+  assert.equal(app.window.getComputedStyle(extension).display, "none");
+  assert.notEqual(app.window.getComputedStyle(native).display, "none");
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.notEqual(app.window.getComputedStyle(extension).display, "none");
   app.dom.window.close();
 });
 
 test("an unverifiable page keeps the entry but surfaces a visible mount error on demand", async () => {
-  const source = markup("home").replace(
-    '<div id="user_home"><input></div>',
+  const source = blog.replace(
+    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
     "",
   );
   const app = open("/user/sai#posts", "home", { source });
   const d = app.document;
   await tick();
-  const columns = d.querySelector(".columns");
+  assert.equal(d.querySelector(".columns"), null);
   assert.equal(app.requests.length, 0);
   const panel = d.querySelector("[data-user-topics-error]");
   assert.equal(panel?.textContent, "无法安全挂载帖子视图");
   assert.equal(panel.style.textAlign, "center");
   assert.equal(panel.style.margin, "6px auto 0px");
-  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
   assert.equal(d.querySelector("[data-user-topics-view]"), null);
   assert.equal(d.querySelector("[data-user-topics-subnav]"), null);
   d.querySelector("[data-user-topics-link] a").click();
@@ -461,19 +519,19 @@ test("an unverifiable page keeps the entry but surfaces a visible mount error on
 });
 
 test("repairing the structure lets the same-hash entry click mount the view", async () => {
-  const source = markup("home").replace(
-    '<div id="user_home"><input></div>',
+  const source = blog.replace(
+    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
     "",
   );
   const app = open("/user/sai#posts", "home", { source });
   const d = app.document;
   await tick();
   assert.equal(!!d.querySelector("[data-user-topics-error]"), true);
-  const columnA = d.querySelector("#columnA");
-  const home = d.createElement("div");
-  home.id = "user_home";
-  home.innerHTML = "<input>";
-  columnA.prepend(home);
+  const footer = d.querySelector("#footer");
+  const columns = d.createElement("div");
+  columns.className = "columns";
+  columns.innerHTML = '<div id="columnA" class="column"></div>';
+  footer.before(columns);
   d.querySelector("[data-user-topics-link] a").click();
   await tick();
   assert.equal(d.querySelector("[data-user-topics-error]"), null);

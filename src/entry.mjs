@@ -175,11 +175,8 @@ export function start(
       main.matches(".mainWrapper") &&
       host.profile.nextElementSibling === main &&
       host.columns.parentElement === main &&
-      host.columns.classList.contains("columns") &&
       host.footer.matches("#footer") &&
       host.footer.parentElement === main &&
-      host.bodyEvidence.isConnected &&
-      host.columns.contains(host.bodyEvidence) &&
       (!host.originalSub ||
         (host.originalSub.isConnected &&
           host.originalSub.parentElement === subjectNav)) &&

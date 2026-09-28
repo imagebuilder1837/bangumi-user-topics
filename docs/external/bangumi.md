@@ -43,7 +43,7 @@
 | 维基 `/user/{key}/wiki`（含十余个子路径） | `#columnA.column` 恒在；`#columnB` 及内容随用户数据有无，无稳定锚点 | 可有可无 | 有 |
 | 天窗 `/user/{key}/doujin` | 无 `.columns` 结构 | — | — |
 
-- 登录态差异：匿名抓取不含的兄弟组件内容会出现在上述页面（如 friend-sorter 在 friends/rev_friends 的 `.mainWrapper` 内、`.columns` 之前插入排序条）；以实时页面为准。
+- 登录态差异：匿名抓取不含的兄弟组件内容会出现在上述页面（如 friend-sorter 在 friends/rev_friends 的 `.mainWrapper` 内、`.columns` 之前插入排序条；friend-tag 在 `.columns` 内部 `#columnUserSingle` 之后插入 `#friendTagPanelColumn` 面板列）；以实时页面为准。
 
 - 正文列没有统一 ID 或统一宽度模型：不得全站硬编码 `#columnA`，也不能为套样式复制宿主 ID 或给自有 sibling 加 column class 就假定宽度正确。
 
@@ -74,6 +74,7 @@
 
 - 原站 `/user/{key}/rev_friends` 的 SSR 导航将好友标为 focus 且不提供反向好友 tab；`bangumi-reverse-friends-nav` 会在运行时插入该项并转移 focus。
 - 本项目进入帖子时的 focus 移交因此必须覆盖“其他扩展创建的已选中顶层导航项”（见 `../spec/host-view.md`），退出按所有权规则恢复。
+- `bangumi-friend-tag` 在 `.columns` 内部插入 `#friendTagPanelColumn` 面板列；`bangumi-friend-sorter` 在 `.columns` 之前插入排序条。两者均不影响接管（footer 边界规则，见 ADR-0004），且在帖子视图活动期间被一并隐藏，退出时原样恢复。
 
 ## 证据等级
 
