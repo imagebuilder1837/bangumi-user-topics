@@ -2,14 +2,14 @@
 
 ## Always-on constraints
 
-- Preserve Bangumi's host DOM and runtime state. Extend native UI patterns; do not replace the host page body. See `docs/development.md` before changing page integration.
+- Preserve Bangumi's host DOM and runtime state. Extend native UI patterns; do not replace the host page body. See `docs/spec/host-view.md` before changing page integration.
 - Userscript metadata and version fields are human-managed; require explicit, per-field approval before changing them. See `docs/agents/metadata.md`.
 - Issue writes are read-only by default; write only when explicitly requested or authorized by a relevant skill. See `docs/agents/issue-tracker.md`.
 - Use Conventional Commits. Before a commit, run `npm run check` on the final change state; see `docs/development.md` for the workflow.
 
 ## Task-specific guides
 
-- Before SearchEncore, route, or user-page UI implementation, follow the Spike 0 and behavior constraints in `docs/development.md`.
+- Before SearchEncore, route, or user-page UI implementation, follow the constraints in `docs/spec/` (data and scheduling semantics in `spec/feed.md`, view behavior in `spec/ui.md`).
 - For code changes, use `docs/module-guide.md` to locate maintained sources. `src/index.user.js` is generated; do not load the entire artifact by default.
 
 ## Agent skills

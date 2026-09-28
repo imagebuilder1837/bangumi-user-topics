@@ -8,7 +8,7 @@ const blog = readFileSync(
   new URL("./fixtures/blog.html", import.meta.url),
   "utf8",
 );
-// Representative shapes observed in docs/spike-0.md; preserve the common profile,
+// Representative shapes observed in the production host pages (see docs/external/bangumi.md); preserve the common profile,
 // wrapper and footer from the anonymized blog fixture, varying the actual host columns.
 const shapes = {
   home: '<div class="columns clearit"><div id="columnA" class="column"><div id="user_home"><input></div></div><div id="columnB" class="column">home sidebar</div></div>',
