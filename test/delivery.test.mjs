@@ -94,7 +94,7 @@ test("installable bundle handles another host, both streams, category navigation
   ]);
   assert.equal(
     dom.window.document.querySelectorAll("[data-user-topics-subnav] a").length,
-    3,
+    4,
   );
   dom.window.location.hash = "#posts/group";
   dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));

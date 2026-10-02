@@ -7,6 +7,7 @@ const categories = {
   "#posts": "all",
   "#posts/group": "group",
   "#posts/subject": "subject",
+  "#posts/replies": "replies",
 };
 
 // Application boundary: a real Window and one replaceable network boundary.

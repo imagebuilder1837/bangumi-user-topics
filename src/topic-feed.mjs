@@ -1,15 +1,18 @@
 import { RateLimitError } from "./search-encore.mjs";
 
 // Service cursors are shared; displayed identities and late exclusions belong to a category.
-const kinds = ["group", "subject"];
+const topicKinds = ["group", "subject"];
+const kinds = [...topicKinds, "replies"];
+const requiredKinds = (category) =>
+  category === "all" ? topicKinds : [category];
 const order = (a, b) =>
   b.createdAt - a.createdAt ||
   kinds.indexOf(a.kind) - kinds.indexOf(b.kind) ||
   a.received - b.received;
-const unavailable = (stream) =>
+const unavailable = (stream, category) =>
   new Error(
     stream.offset > 5000
-      ? "已达到服务检索上限，可能仍有更早的帖子"
+      ? `已达到服务检索上限，可能仍有更早的${category === "replies" ? "评论回复" : "帖子"}`
       : "无法确定当前页，请继续重试",
   );
 
@@ -50,7 +53,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
   }
   function dispatch() {
     if (paused) return;
-    while (inFlight < 2 && queue.length) {
+    while (inFlight < 3 && queue.length) {
       const front = queue.findIndex((job) => job.categories.has(foreground));
       // A foreground target waiting for a response or its next request owns free slots.
       if (
@@ -98,18 +101,18 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
       ? known.get(view.pages.get(Math.max(...view.pages.keys())).at(-1))
       : null;
     const result = [];
-    for (const kind of category === "all" ? kinds : [category]) {
-      for (const topic of streams[kind].rows) {
-        if (view.excluded.has(topic.key)) continue;
+    for (const kind of requiredKinds(category)) {
+      for (const item of streams[kind].rows) {
+        if (view.excluded.has(item.key)) continue;
         if (
           boundary &&
-          !displayed.has(topic.key) &&
-          order(topic, boundary) <= 0
+          !displayed.has(item.key) &&
+          order(item, boundary) <= 0
         ) {
-          view.excluded.add(topic.key);
+          view.excluded.add(item.key);
           continue;
         }
-        result.push(topic);
+        result.push(item);
       }
     }
     result.sort(order);
@@ -117,7 +120,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
   }
 
   async function fill(category, count, target) {
-    const required = category === "all" ? kinds : [category];
+    const required = requiredKinds(category);
     active.add(target);
     try {
       const outcomes = await Promise.allSettled(
@@ -132,7 +135,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
               if (available >= count || stream.exhausted) return;
               if (paused) throw new Error("请求已暂停，请稍后重试");
               if (stream.offset > 5000 || target.requests[kind] >= 3)
-                throw unavailable(stream);
+                throw unavailable(stream, category);
               let pending = stream.pending;
               if (!pending) {
                 const offset = stream.offset;
@@ -186,7 +189,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
     if (!target) {
       target = {
         category,
-        requests: { group: 0, subject: 0 },
+        requests: { group: 0, subject: 0, replies: 0 },
         failure: null,
         blocked: null,
         pending: null,
@@ -198,7 +201,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
       if (paused && now() < cooldown)
         return { error: new Error("请求冷却中，请稍后重试") };
       paused = false;
-      target.requests = { group: 0, subject: 0 };
+      target.requests = { group: 0, subject: 0, replies: 0 };
       target.failure = null;
       target.blocked = null;
       schedule();
@@ -211,9 +214,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
           next:
             entries.length > page * 10
               ? "yes"
-              : (category === "all" ? kinds : [category]).every(
-                    (k) => streams[k].exhausted,
-                  )
+              : requiredKinds(category).every((k) => streams[k].exhausted)
                 ? "no"
                 : "unknown",
         };
@@ -223,7 +224,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
       let problem = null;
       try {
         const cached = candidates(category);
-        const required = category === "all" ? kinds : [category];
+        const required = requiredKinds(category);
         if (
           !required.every(
             (kind) =>
@@ -238,7 +239,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
         problem = error;
       }
       let entries = candidates(category);
-      const required = category === "all" ? kinds : [category];
+      const required = requiredKinds(category);
       const exhausted = () => required.every((k) => streams[k].exhausted);
       const reliable = (count) =>
         required.every(
@@ -250,7 +251,10 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
       if (!reliable(goal)) {
         target.failure =
           problem ||
-          unavailable(streams[category === "all" ? "group" : category]);
+          unavailable(
+            streams[category === "all" ? "group" : category],
+            category,
+          );
         return { error: target.failure };
       }
       if (entries.length <= start) return { items: [], next: "no" };
@@ -277,7 +281,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
     if (!view.pages.has(page))
       view.pages.set(
         page,
-        items.map((topic) => topic.key),
+        items.map((item) => item.key),
       );
   }
   return { prepare, commit, setForeground };

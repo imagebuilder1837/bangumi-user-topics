@@ -59,6 +59,7 @@
 
 - CSS 全文未出现 `entry_list` ID 选择器；列表规则使用 `.entry-list > .item` 及其 `.entry`、`h2.title`、`.tools .time`——可只复用 class，不复制宿主 ID。
 - `.entry-list > .item` 使用 flex、下边框及换行规则；标题 16px、640px 以下 15px。`.entry-list > .item .tools` 原站使用 `justify-content: space-between`；日志的日期与回复同在唯一的 `.time` 子项中，因此整体靠左。
+- 原生 `.entry-list .content > a` 可承接纯文本摘要及暗色/窄屏颜色；桌面 max-height 为73px，640px以下54px，超出隐藏，并非保证出现省略号的 line-clamp。完整讨论楼层样式依赖头像和嵌套缩进，不适合直接套在摘要卡上。
 - 暗色由 `html[data-theme=dark]` 及原站颜色变量覆盖；窄屏按原站 media 规则适配，无需自建主题体系。
 - 布局：通用桌面主布局约 1000px；首页（mainXL）为可伸缩主副栏，日志/目录另有 `columns-center`（主列最大 750px、侧栏 220px）。好友与具体收藏列表没有 mainXL 布局。
 - **非 mainXL 页面在 641–999px 视口仍有 1000px 祖先最小宽度**（`#wrapperNeue`/`#headerNeue2`）：仅设置自有根宽度无法跨入口一致，这就是项目侧有限几何覆盖的依据（见 `../spec/host-view.md`）。
@@ -66,6 +67,8 @@
 - 简单规则摘录会丢失 media 层级，不能单独用于判断实际级联；宽度结论以原站 CSS 为准（jsdom 无真实布局）。
 
 ## 域名差异（chii.in）
+
+- Cloudflare 防护比另两域严格，无头浏览器可能停在带限制性 CSP 的挑战页。2026-10-02 用户确认实际使用无差别；后续不单独针对 chii.in 做 CORS smoke test，不以挑战页失败判定真实用户页的 CORS，也不据此增加请求权限。
 
 - 匿名 curl 常返回挑战页（403），不能用作 DOM fixture；关键结构经用户浏览器采样确认与另两域名一致（导航锚点、`.columns.columns-center` 父节点 `.mainWrapper.mainXL`、columns 与 footer 同父）。
 - 曾观察到原站 `/min/g=js?r771` 403 与 `chiiLib` 未定义；这与 bgmdb fetch 成功是不同事实，宿主脚本运行状态需在真实环境确认。

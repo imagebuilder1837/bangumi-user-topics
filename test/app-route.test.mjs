@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { setup, enter, tick, hit, envelope, html } from "./app-support.mjs";
 import { start } from "../src/entry.mjs";
 
-test("subject direct link and three exact category hashes use the subject endpoint", async () => {
+test("subject direct link and four exact category hashes use the subject endpoint", async () => {
   const app = setup({
     url: "https://bangumi.tv/user/sai/blog#posts/subject",
     respond: (offset, limit, url) =>
@@ -38,12 +38,12 @@ test("subject direct link and three exact category hashes use the subject endpoi
     [...app.document.querySelectorAll(".navSubTabs a")]
       .filter((a) => a.hash.startsWith("#posts"))
       .map((a) => a.hash),
-    ["#posts", "#posts/group", "#posts/subject"],
+    ["#posts", "#posts/group", "#posts/subject", "#posts/replies"],
   );
   app.dom.window.close();
 });
 
-test("category heading and browser title follow the active topic category and restore on exit", async () => {
+test("category heading and browser title follow the active category and restore on exit", async () => {
   const app = setup();
   app.document.title = "Sai🖖的日志";
   const heading = () =>
@@ -57,6 +57,7 @@ test("category heading and browser title follow the active topic category and re
   for (const [hash, expected] of [
     ["#posts/group", "Sai🖖的小组话题"],
     ["#posts/subject", "Sai🖖的条目讨论"],
+    ["#posts/replies", "Sai🖖的评论回复"],
   ]) {
     app.window.location.hash = hash;
     app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));

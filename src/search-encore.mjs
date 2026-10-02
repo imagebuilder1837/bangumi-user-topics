@@ -1,4 +1,67 @@
 const safeID = (value) => Number.isSafeInteger(value) && value >= 0;
+const replySources = {
+  group: {
+    path: "group/topic",
+    container: "小组话题",
+    label: "小组话题回复",
+    parentPath: "group",
+  },
+  subject: {
+    path: "subject/topic",
+    container: "条目讨论",
+    label: "条目讨论回复",
+    parentPath: "subject",
+  },
+  episode: {
+    path: "ep",
+    container: "章节",
+    label: "章节评论",
+    parentPath: "subject",
+  },
+  character: { path: "character", container: "角色", label: "角色评论" },
+  person: { path: "person", container: "人物", label: "人物评论" },
+  blog: { path: "blog", container: "日志", label: "日志评论" },
+};
+
+function normalizeReply(row, origin) {
+  const source =
+    row &&
+    typeof row.source === "string" &&
+    Object.hasOwn(replySources, row.source)
+      ? replySources[row.source]
+      : null;
+  if (
+    !source ||
+    !safeID(row.id) ||
+    row.id === 0 ||
+    !safeID(row.containerID) ||
+    row.containerID === 0 ||
+    !safeID(row.createdAt) ||
+    row.createdAt > 8_639_999_999_999 ||
+    typeof row.excerpt !== "string" ||
+    (row.parentID != null && (!safeID(row.parentID) || row.parentID === 0)) ||
+    (row.creatorID != null && !safeID(row.creatorID)) ||
+    ["containerTitle", "parentName", "creatorName", "creatorUsername"].some(
+      (field) => row[field] != null && typeof row[field] !== "string",
+    )
+  )
+    throw new Error("SearchEncore 评论回复数据无效");
+  return {
+    key: `reply:${row.source}:${row.id}`,
+    kind: "replies",
+    title:
+      row.containerTitle?.trim() || `${source.container} #${row.containerID}`,
+    excerpt: row.excerpt.trim() || "暂无可用摘要",
+    sourceLabel: source.label,
+    parent: row.parentName?.trim() || null,
+    parentURL:
+      source.parentPath && row.parentID
+        ? `${origin}/${source.parentPath}/${row.parentID}`
+        : null,
+    createdAt: row.createdAt,
+    url: `${origin}/${source.path}/${row.containerID}#post_${row.id}`,
+  };
+}
 
 export function normalizeBatch(
   payload,
@@ -19,7 +82,8 @@ export function normalizeBatch(
   ) {
     throw new Error("SearchEncore 返回格式无效");
   }
-  const topics = payload.data.map((row) => {
+  const items = payload.data.map((row) => {
+    if (kind === "replies") return normalizeReply(row, origin);
     if (
       !row ||
       !safeID(row.id) ||
@@ -50,8 +114,8 @@ export function normalizeBatch(
       parentURL: `${origin}/${kind}/${row.parentID}`,
     };
   });
-  if (topics.length > limit) throw new Error("SearchEncore 返回过多数据");
-  return topics;
+  if (items.length > limit) throw new Error("SearchEncore 返回过多数据");
+  return items;
 }
 
 export class RateLimitError extends Error {
@@ -79,14 +143,17 @@ export function createSearchEncore(
       limit > 50
     )
       throw new Error("请求超出检索范围");
-    if (kind !== "group" && kind !== "subject") throw new Error("未知主题来源");
-    const url = new URL(`https://bgmdb.ry.mk/v1/search/${kind}-topics`);
+    if (!["group", "subject", "replies"].includes(kind))
+      throw new Error("未知查询来源");
+    const endpoint = kind === "replies" ? "replies" : `${kind}-topics`;
+    const url = new URL(`https://bgmdb.ry.mk/v1/search/${endpoint}`);
     url.search = new URLSearchParams({
       q: `user:${user}`,
       sort: "newest",
       limit: String(limit),
       offset: String(offset),
     }).toString();
+    if (kind === "replies") url.searchParams.set("source", "all");
     const controller = new AbortController();
     let timeout;
     try {

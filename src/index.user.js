@@ -2,7 +2,7 @@
 // @name         Bangumi 用户帖子
 // @namespace    https://github.com/imagebuilder1837/bangumi-user-topics
 // @version      0.1.0
-// @description  在 Bangumi 用户页个人导航中增加“帖子”入口，查看该用户发起的小组话题与条目讨论。
+// @description  在 Bangumi 用户页个人导航中增加“帖子”入口，查看该用户发起的小组话题、条目讨论与评论回复。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*
 // @match        https://bgm.tv/anime/list/*
@@ -294,6 +294,69 @@
   }
 
   const safeID = (value) => Number.isSafeInteger(value) && value >= 0;
+  const replySources = {
+    group: {
+      path: "group/topic",
+      container: "小组话题",
+      label: "小组话题回复",
+      parentPath: "group",
+    },
+    subject: {
+      path: "subject/topic",
+      container: "条目讨论",
+      label: "条目讨论回复",
+      parentPath: "subject",
+    },
+    episode: {
+      path: "ep",
+      container: "章节",
+      label: "章节评论",
+      parentPath: "subject",
+    },
+    character: { path: "character", container: "角色", label: "角色评论" },
+    person: { path: "person", container: "人物", label: "人物评论" },
+    blog: { path: "blog", container: "日志", label: "日志评论" },
+  };
+
+  function normalizeReply(row, origin) {
+    const source =
+      row &&
+      typeof row.source === "string" &&
+      Object.hasOwn(replySources, row.source)
+        ? replySources[row.source]
+        : null;
+    if (
+      !source ||
+      !safeID(row.id) ||
+      row.id === 0 ||
+      !safeID(row.containerID) ||
+      row.containerID === 0 ||
+      !safeID(row.createdAt) ||
+      row.createdAt > 8_639_999_999_999 ||
+      typeof row.excerpt !== "string" ||
+      (row.parentID != null && (!safeID(row.parentID) || row.parentID === 0)) ||
+      (row.creatorID != null && !safeID(row.creatorID)) ||
+      ["containerTitle", "parentName", "creatorName", "creatorUsername"].some(
+        (field) => row[field] != null && typeof row[field] !== "string",
+      )
+    )
+      throw new Error("SearchEncore 评论回复数据无效");
+    return {
+      key: `reply:${row.source}:${row.id}`,
+      kind: "replies",
+      title:
+        row.containerTitle?.trim() || `${source.container} #${row.containerID}`,
+      excerpt: row.excerpt.trim() || "暂无可用摘要",
+      sourceLabel: source.label,
+      parent: row.parentName?.trim() || null,
+      parentURL:
+        source.parentPath && row.parentID
+          ? `${origin}/${source.parentPath}/${row.parentID}`
+          : null,
+      createdAt: row.createdAt,
+      url: `${origin}/${source.path}/${row.containerID}#post_${row.id}`,
+    };
+  }
 
   function normalizeBatch(payload, { offset, limit, origin, kind = "group" }) {
     if (
@@ -311,7 +374,8 @@
     ) {
       throw new Error("SearchEncore 返回格式无效");
     }
-    const topics = payload.data.map((row) => {
+    const items = payload.data.map((row) => {
+      if (kind === "replies") return normalizeReply(row, origin);
       if (
         !row ||
         !safeID(row.id) ||
@@ -342,8 +406,8 @@
         parentURL: `${origin}/${kind}/${row.parentID}`,
       };
     });
-    if (topics.length > limit) throw new Error("SearchEncore 返回过多数据");
-    return topics;
+    if (items.length > limit) throw new Error("SearchEncore 返回过多数据");
+    return items;
   }
 
   class RateLimitError extends Error {
@@ -371,15 +435,17 @@
         limit > 50
       )
         throw new Error("请求超出检索范围");
-      if (kind !== "group" && kind !== "subject")
-        throw new Error("未知主题来源");
-      const url = new URL(`https://bgmdb.ry.mk/v1/search/${kind}-topics`);
+      if (!["group", "subject", "replies"].includes(kind))
+        throw new Error("未知查询来源");
+      const endpoint = kind === "replies" ? "replies" : `${kind}-topics`;
+      const url = new URL(`https://bgmdb.ry.mk/v1/search/${endpoint}`);
       url.search = new URLSearchParams({
         q: `user:${user}`,
         sort: "newest",
         limit: String(limit),
         offset: String(offset),
       }).toString();
+      if (kind === "replies") url.searchParams.set("source", "all");
       const controller = new AbortController();
       let timeout;
       try {
@@ -424,15 +490,18 @@
   }
 
   // Service cursors are shared; displayed identities and late exclusions belong to a category.
-  const kinds = ["group", "subject"];
+  const topicKinds = ["group", "subject"];
+  const kinds = [...topicKinds, "replies"];
+  const requiredKinds = (category) =>
+    category === "all" ? topicKinds : [category];
   const order = (a, b) =>
     b.createdAt - a.createdAt ||
     kinds.indexOf(a.kind) - kinds.indexOf(b.kind) ||
     a.received - b.received;
-  const unavailable = (stream) =>
+  const unavailable = (stream, category) =>
     new Error(
       stream.offset > 5000
-        ? "已达到服务检索上限，可能仍有更早的帖子"
+        ? `已达到服务检索上限，可能仍有更早的${category === "replies" ? "评论回复" : "帖子"}`
         : "无法确定当前页，请继续重试",
     );
 
@@ -473,7 +542,7 @@
     }
     function dispatch() {
       if (paused) return;
-      while (inFlight < 2 && queue.length) {
+      while (inFlight < 3 && queue.length) {
         const front = queue.findIndex((job) => job.categories.has(foreground));
         // A foreground target waiting for a response or its next request owns free slots.
         if (
@@ -521,18 +590,18 @@
         ? known.get(view.pages.get(Math.max(...view.pages.keys())).at(-1))
         : null;
       const result = [];
-      for (const kind of category === "all" ? kinds : [category]) {
-        for (const topic of streams[kind].rows) {
-          if (view.excluded.has(topic.key)) continue;
+      for (const kind of requiredKinds(category)) {
+        for (const item of streams[kind].rows) {
+          if (view.excluded.has(item.key)) continue;
           if (
             boundary &&
-            !displayed.has(topic.key) &&
-            order(topic, boundary) <= 0
+            !displayed.has(item.key) &&
+            order(item, boundary) <= 0
           ) {
-            view.excluded.add(topic.key);
+            view.excluded.add(item.key);
             continue;
           }
-          result.push(topic);
+          result.push(item);
         }
       }
       result.sort(order);
@@ -540,7 +609,7 @@
     }
 
     async function fill(category, count, target) {
-      const required = category === "all" ? kinds : [category];
+      const required = requiredKinds(category);
       active.add(target);
       try {
         const outcomes = await Promise.allSettled(
@@ -555,7 +624,7 @@
                 if (available >= count || stream.exhausted) return;
                 if (paused) throw new Error("请求已暂停，请稍后重试");
                 if (stream.offset > 5000 || target.requests[kind] >= 3)
-                  throw unavailable(stream);
+                  throw unavailable(stream, category);
                 let pending = stream.pending;
                 if (!pending) {
                   const offset = stream.offset;
@@ -611,7 +680,7 @@
       if (!target) {
         target = {
           category,
-          requests: { group: 0, subject: 0 },
+          requests: { group: 0, subject: 0, replies: 0 },
           failure: null,
           blocked: null,
           pending: null,
@@ -623,7 +692,7 @@
         if (paused && now() < cooldown)
           return { error: new Error("请求冷却中，请稍后重试") };
         paused = false;
-        target.requests = { group: 0, subject: 0 };
+        target.requests = { group: 0, subject: 0, replies: 0 };
         target.failure = null;
         target.blocked = null;
         schedule();
@@ -636,9 +705,7 @@
             next:
               entries.length > page * 10
                 ? "yes"
-                : (category === "all" ? kinds : [category]).every(
-                      (k) => streams[k].exhausted,
-                    )
+                : requiredKinds(category).every((k) => streams[k].exhausted)
                   ? "no"
                   : "unknown",
           };
@@ -648,7 +715,7 @@
         let problem = null;
         try {
           const cached = candidates(category);
-          const required = category === "all" ? kinds : [category];
+          const required = requiredKinds(category);
           if (
             !required.every(
               (kind) =>
@@ -663,7 +730,7 @@
           problem = error;
         }
         let entries = candidates(category);
-        const required = category === "all" ? kinds : [category];
+        const required = requiredKinds(category);
         const exhausted = () => required.every((k) => streams[k].exhausted);
         const reliable = (count) =>
           required.every(
@@ -675,7 +742,10 @@
         if (!reliable(goal)) {
           target.failure =
             problem ||
-            unavailable(streams[category === "all" ? "group" : category]);
+            unavailable(
+              streams[category === "all" ? "group" : category],
+              category,
+            );
           return { error: target.failure };
         }
         if (entries.length <= start) return { items: [], next: "no" };
@@ -702,7 +772,7 @@
       if (!view.pages.has(page))
         view.pages.set(
           page,
-          items.map((topic) => topic.key),
+          items.map((item) => item.key),
         );
     }
     return { prepare, commit, setForeground };
@@ -725,6 +795,7 @@
       ["all", "全部帖子", "#posts"],
       ["group", "小组话题", "#posts/group"],
       ["subject", "条目讨论", "#posts/subject"],
+      ["replies", "评论回复", "#posts/replies"],
     ]) {
       let li = nav.querySelector(
         `:scope > li > a[href="${hash}"]`,
@@ -744,6 +815,7 @@
       all: "帖子",
       group: "小组话题",
       subject: "条目讨论",
+      replies: "评论回复",
     }[category];
     return `${nickname}的${label}`;
   }
@@ -771,31 +843,47 @@
     status.append(message);
     header.append(title, status);
     root.append(header);
-    if (state.loading) message.textContent = "正在加载帖子…";
+    const contentName = category === "replies" ? "评论回复" : "帖子";
+    if (state.loading) message.textContent = `正在加载${contentName}…`;
     if (state.items?.length) {
       const list = el(d, "div", "entry-list");
-      for (const topic of state.items) {
-        const item = el(d, "div", "item clearit");
+      for (const item of state.items) {
+        const row = el(d, "div", "item clearit");
         const entry = el(d, "div", "entry");
         const heading = el(d, "h2", "title");
-        const link = el(d, "a", "l", topic.title);
-        link.href = topic.url;
+        const link = el(d, "a", "l", item.title);
+        link.href = item.url;
         heading.append(link);
         const tools = el(d, "div", "tools");
-        const parent = el(d, "a", "", topic.parent);
-        parent.href = topic.parentURL;
         const time = el(d, "div", "time");
-        const replies = el(d, "a", "l", `${topic.replies} 回复`);
-        replies.href = topic.url;
-        time.append(parent, " · ", formatTime(topic.createdAt), " · ", replies);
+        entry.append(heading);
+        if (item.kind === "replies") {
+          const content = el(d, "div", "content");
+          const excerpt = el(d, "a", "", item.excerpt);
+          excerpt.href = item.url;
+          content.append(excerpt);
+          entry.append(content);
+          time.append(item.sourceLabel, " · ");
+        }
+        if (item.parent) {
+          const parent = el(d, item.parentURL ? "a" : "span", "", item.parent);
+          if (item.parentURL) parent.href = item.parentURL;
+          time.append(parent, " · ");
+        }
+        time.append(formatTime(item.createdAt));
+        if (item.kind !== "replies") {
+          const replies = el(d, "a", "l", `${item.replies} 回复`);
+          replies.href = item.url;
+          time.append(" · ", replies);
+        }
         tools.append(time);
-        entry.append(heading, tools);
-        item.append(entry);
-        list.append(item);
+        entry.append(tools);
+        row.append(entry);
+        list.append(row);
       }
       root.append(list);
     } else if (!state.loading && !state.error)
-      message.textContent = "没有找到已收录的帖子";
+      message.textContent = `没有找到已收录的${contentName}`;
     if (state.error || state.warning) {
       message.textContent =
         state.error?.message ||
@@ -875,6 +963,7 @@
     "#posts": "all",
     "#posts/group": "group",
     "#posts/subject": "subject",
+    "#posts/replies": "replies",
   };
 
   // Application boundary: a real Window and one replaceable network boundary.

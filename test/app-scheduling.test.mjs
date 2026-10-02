@@ -2,6 +2,56 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
 
+test("three query streams can be in flight together without publishing switched-away results", async (t) => {
+  const waiting = [];
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts",
+    respond: (offset, limit, url) =>
+      new Promise((resolve) => {
+        waiting.push({
+          path: url.pathname,
+          resolve: () => resolve(envelope([], offset, limit)),
+        });
+      }),
+  });
+  t.after(async () => {
+    for (const request of waiting) request.resolve();
+    await tick();
+    for (const request of waiting) request.resolve();
+    await tick();
+    app.dom.window.close();
+  });
+  await tick();
+  assert.equal(waiting.length, 2);
+  app.window.location.hash = "#posts/replies";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  await tick();
+  assert.deepEqual(
+    waiting.map((request) => request.path),
+    [
+      "/v1/search/group-topics",
+      "/v1/search/subject-topics",
+      "/v1/search/replies",
+    ],
+  );
+  waiting[0].resolve();
+  waiting[1].resolve();
+  await tick();
+  assert.equal(app.document.title, "Sai🖖的评论回复");
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /正在加载评论回复/,
+  );
+  waiting[2].resolve();
+  await tick();
+  assert.equal(
+    app.document.querySelector("[role=status]").textContent,
+    "没有找到已收录的评论回复",
+  );
+  assert.equal(app.scrolls.length, 0);
+  app.dom.window.close();
+});
+
 test("a switched foreground stream starts before background continuation", async () => {
   let release;
   const app = setup({
