@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bangumi 用户帖子
 // @namespace    https://github.com/imagebuilder1837/bangumi-user-topics
-// @version      0.1.1
+// @version      0.1.2
 // @description  在 Bangumi 用户页个人导航中增加“帖子”入口，查看该用户发起的小组话题、条目讨论与评论回复。
 // @author       imagebuilder1837
 // @match        https://bgm.tv/user/*
