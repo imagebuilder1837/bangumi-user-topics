@@ -112,7 +112,7 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts/group",
     respond: (offset, limit, url) =>
-      url.pathname.endsWith("subject-topics")
+      url.pathname.endsWith("subject-topics") || offset
         ? envelope([], offset, limit)
         : new Promise((resolve) => {
             deliver = () =>
@@ -145,7 +145,7 @@ test("a failed host hiding condition exits, and only an explicit same-hash click
     app.document.querySelector(".entry-list a.l")?.textContent,
     "Topic 1",
   );
-  assert.equal(app.requests.length, 2);
+  assert.equal(app.requests.length, 3);
   app.dom.window.close();
 });
 
@@ -205,10 +205,10 @@ test("reentry after recovery repaints the cached page without new requests", asy
       ),
   });
   await tick();
-  assert.equal(app.requests.length, 2);
+  assert.equal(app.requests.length, 6);
   app.document.querySelector("[data-next]").click();
   await tick();
-  assert.equal(app.requests.length, 4);
+  assert.equal(app.requests.length, 6);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   const main = app.document.querySelector(".columns").parentElement;
   main.classList.remove("mainWrapper");
@@ -219,7 +219,7 @@ test("reentry after recovery repaints the cached page without new requests", asy
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();
   assert.ok(app.document.querySelector("[data-user-topics-view]"));
-  assert.equal(app.requests.length, 4);
+  assert.equal(app.requests.length, 6);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   assert.equal(app.scrolls.length, before);
   app.dom.window.close();

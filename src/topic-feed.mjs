@@ -1,4 +1,4 @@
-import { RateLimitError } from "./search-encore.mjs";
+import { RateLimitError, RetryableError } from "./search-encore.mjs";
 
 // Service cursors are shared; displayed identities and late exclusions belong to a category.
 const topicKinds = ["group", "subject"];
@@ -16,7 +16,10 @@ const unavailable = (stream, category) =>
       : "无法确定当前页，请继续重试",
   );
 
-export function createTopicFeed(search, { user, origin, now = Date.now }) {
+export function createTopicFeed(
+  search,
+  { user, origin, now = Date.now, delay = setTimeout, onChange = () => {} },
+) {
   const streams = Object.fromEntries(
     kinds.map((kind) => [
       kind,
@@ -27,7 +30,18 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
   const views = Object.fromEntries(
     ["all", ...kinds].map((kind) => [
       kind,
-      { pages: new Map(), excluded: new Set(), targets: new Map() },
+      {
+        category: kind,
+        pages: new Map(),
+        excluded: new Set(),
+        frozenAt: 0,
+        goal: 0,
+        failure: null,
+        pending: null,
+        restart: false,
+        waiters: new Set(),
+        stalled: Object.fromEntries(kinds.map((kind) => [kind, 0])),
+      },
     ]),
   );
   let received = 0;
@@ -36,7 +50,6 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
   let cooldown = 0;
   let paused = false;
   const queue = [];
-  const active = new Set();
   let scheduled = false;
 
   function setForeground(category) {
@@ -55,14 +68,9 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
     if (paused) return;
     while (inFlight < 3 && queue.length) {
       const front = queue.findIndex((job) => job.categories.has(foreground));
-      // A foreground target waiting for a response or its next request owns free slots.
-      if (
-        front < 0 &&
-        [...active].some((target) => target.category === foreground)
-      )
-        return;
       const job = queue.splice(front < 0 ? 0 : front, 1)[0];
       inFlight++;
+      job.attempts++;
       search({
         user,
         origin,
@@ -76,23 +84,21 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
             cooldown = Math.max(cooldown, error.retryAfter);
             for (const waiting of queue.splice(0)) waiting.reject(error);
           }
-          job.reject(error);
+          if (error instanceof RetryableError && job.attempts < 3) {
+            delay(() => {
+              if (paused) job.reject(new Error("请求已暂停，请稍后重试"));
+              else {
+                queue.push(job);
+                schedule();
+              }
+            }, job.attempts * 1000);
+          } else job.reject(error);
         })
         .finally(() => {
           inFlight--;
           schedule();
         });
     }
-  }
-  function request(kind, offset, limit, category) {
-    const job = { kind, offset, limit, categories: new Set([category]) };
-    const promise = new Promise((resolve, reject) => {
-      job.resolve = resolve;
-      job.reject = reject;
-    });
-    streams[kind].pending = { promise, job };
-    schedule();
-    return streams[kind].pending;
   }
   function candidates(category) {
     const view = views[category];
@@ -106,6 +112,7 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
         if (view.excluded.has(item.key)) continue;
         if (
           boundary &&
+          item.received >= view.frozenAt &&
           !displayed.has(item.key) &&
           order(item, boundary) <= 0
         ) {
@@ -118,56 +125,119 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
     result.sort(order);
     return result;
   }
-
-  async function fill(category, count, target) {
+  function snapshot(category, page) {
+    const view = views[category];
+    const entries = candidates(category);
     const required = requiredKinds(category);
-    active.add(target);
+    const exhausted = required.every((kind) => streams[kind].exhausted);
+    const depth = Math.min(
+      entries.length,
+      ...required.map((kind) =>
+        streams[kind].exhausted
+          ? Infinity
+          : entries.filter((item) => item.kind === kind).length,
+      ),
+    );
+    const frozen = view.pages.get(page);
+    const goal = page * 10;
+    if (!frozen && depth < goal && !exhausted)
+      return view.failure && !view.restart ? { error: view.failure } : null;
+    return {
+      items: frozen
+        ? frozen.map((key) => known.get(key))
+        : entries.slice((page - 1) * 10, goal),
+      next: depth > goal ? "yes" : exhausted ? "no" : "unknown",
+      confirmedPage: Math.ceil(depth / 10),
+      prefetching: Boolean(view.pending),
+      warning: view.failure,
+    };
+  }
+  function notify() {
+    for (const view of Object.values(views)) {
+      if (!view.goal) continue;
+      for (const waiter of view.waiters) {
+        const result = snapshot(view.category, waiter.page);
+        if (result) {
+          view.waiters.delete(waiter);
+          waiter.resolve(result);
+        }
+      }
+      onChange(view.category);
+    }
+  }
+  function request(kind, offset, limit, category) {
+    const stream = streams[kind];
+    const job = {
+      kind,
+      offset,
+      limit,
+      categories: new Set([category]),
+      attempts: 0,
+    };
+    const promise = new Promise((resolve, reject) => {
+      job.resolve = resolve;
+      job.reject = reject;
+    });
+    const pending = { job, promise };
+    stream.pending = pending;
+    pending.promise = promise
+      .then((batch) => {
+        if (!Array.isArray(batch) || batch.length > limit)
+          throw new Error("SearchEncore 返回格式无效");
+        for (const item of batch) {
+          if (!known.has(item.key)) {
+            item.received = received++;
+            known.set(item.key, item);
+            stream.rows.push(item);
+          }
+        }
+        stream.offset += batch.length;
+        if (!batch.length) stream.exhausted = true;
+        notify();
+      })
+      .finally(() => {
+        if (stream.pending === pending) stream.pending = null;
+      });
+    queue.push(job);
+    schedule();
+    return pending;
+  }
+  async function fill(view) {
     try {
       const outcomes = await Promise.allSettled(
-        required.map(async (kind) => {
+        requiredKinds(view.category).map(async (kind) => {
           const stream = streams[kind];
           try {
             while (true) {
-              if (target.blocked) throw target.blocked;
-              const available = candidates(category).filter(
-                (t) => t.kind === kind,
+              if (view.failure) throw view.failure;
+              const available = candidates(view.category).filter(
+                (item) => item.kind === kind,
               ).length;
-              if (available >= count || stream.exhausted) return;
+              if (available >= view.goal || stream.exhausted) return;
               if (paused) throw new Error("请求已暂停，请稍后重试");
-              if (stream.offset > 5000 || target.requests[kind] >= 3)
-                throw unavailable(stream, category);
-              let pending = stream.pending;
-              if (!pending) {
-                const offset = stream.offset;
-                const limit = Math.min(50, Math.max(1, count - available));
-                pending = request(kind, offset, limit, category);
-                queue.push(pending.job);
-                schedule();
-                // The cursor and cache update exactly once, regardless of how many targets await this job.
-                pending.promise = pending.promise
-                  .then((batch) => {
-                    if (!Array.isArray(batch) || batch.length > limit)
-                      throw new Error("SearchEncore 返回格式无效");
-                    for (const item of batch) {
-                      if (!known.has(item.key)) {
-                        item.received = received++;
-                        known.set(item.key, item);
-                        stream.rows.push(item);
-                      }
-                    }
-                    stream.offset += batch.length;
-                    if (!batch.length) stream.exhausted = true;
-                  })
-                  .finally(() => {
-                    if (stream.pending === pending) stream.pending = null;
-                  });
-              }
-              pending.job.categories.add(category);
-              target.requests[kind]++;
+              if (stream.offset > 5000)
+                throw unavailable(stream, view.category);
+              const pending =
+                stream.pending ||
+                request(
+                  kind,
+                  stream.offset,
+                  Math.min(50, view.goal - available),
+                  view.category,
+                );
+              pending.job.categories.add(view.category);
               await pending.promise;
+              const after = candidates(view.category).filter(
+                (item) => item.kind === kind,
+              ).length;
+              view.stalled[kind] =
+                after > available ? 0 : view.stalled[kind] + 1;
+              if (!stream.exhausted && view.stalled[kind] >= 3)
+                throw new Error("连续三批没有有效新增，请继续重试");
             }
           } catch (error) {
-            target.blocked ||= error;
+            view.failure ||= error;
+            notify();
             throw error;
           }
         }),
@@ -175,114 +245,63 @@ export function createTopicFeed(search, { user, origin, now = Date.now }) {
       const failed = outcomes.find((outcome) => outcome.status === "rejected");
       if (failed) throw failed.reason;
     } finally {
-      active.delete(target);
       schedule();
     }
   }
-
-  async function prepare(category, page, retry = false) {
+  function reset(view) {
+    view.failure = null;
+    view.stalled = Object.fromEntries(kinds.map((kind) => [kind, 0]));
+  }
+  function run(view) {
+    const goal = view.goal;
+    view.pending = Promise.resolve()
+      .then(() => fill(view))
+      .catch((error) => {
+        view.failure ||= error;
+      })
+      .finally(() => {
+        view.pending = null;
+        if (view.restart && !paused) {
+          view.restart = false;
+          reset(view);
+          run(view);
+        } else {
+          view.restart = false;
+          // One source may have finished before a later click raised the goal.
+          if (!view.failure && !paused && view.goal > goal) run(view);
+        }
+        notify();
+      });
+  }
+  function prepare(category, page, retry = false) {
     const view = views[category];
     if (!view || !Number.isInteger(page) || page < 1)
       throw new Error("无效分类或页码");
-    const id = String(page);
-    let target = view.targets.get(id);
-    if (!target) {
-      target = {
-        category,
-        requests: { group: 0, subject: 0, replies: 0 },
-        failure: null,
-        blocked: null,
-        pending: null,
-      };
-      view.targets.set(id, target);
+    const goal = 101 + 100 * Math.floor((page + 6) / 10);
+    const higher = goal > view.goal;
+    view.goal = Math.max(view.goal, goal);
+    if (retry && paused && now() < cooldown)
+      return Promise.resolve({ error: new Error("请求冷却中，请稍后重试") });
+    if (retry) paused = false;
+    if (retry || higher) {
+      if (view.pending && view.failure) view.restart = true;
+      else if (!view.pending) reset(view);
     }
-    if (target.pending) return target.pending;
-    if (retry) {
-      if (paused && now() < cooldown)
-        return { error: new Error("请求冷却中，请稍后重试") };
-      paused = false;
-      target.requests = { group: 0, subject: 0, replies: 0 };
-      target.failure = null;
-      target.blocked = null;
-      schedule();
-    }
-    const work = async () => {
-      if (view.pages.has(page) && !retry) {
-        const entries = candidates(category);
-        return {
-          items: view.pages.get(page).map((key) => known.get(key)),
-          next:
-            entries.length > page * 10
-              ? "yes"
-              : requiredKinds(category).every((k) => streams[k].exhausted)
-                ? "no"
-                : "unknown",
-        };
-      }
-      if (target.failure) return { error: target.failure };
-      const goal = page * 10;
-      let problem = null;
-      try {
-        const cached = candidates(category);
-        const required = requiredKinds(category);
-        if (
-          !required.every(
-            (kind) =>
-              streams[kind].exhausted ||
-              cached.filter((item) => item.kind === kind).length >= goal + 1,
-          )
-        ) {
-          if (paused) throw new Error("请求已暂停，请稍后重试");
-          await fill(category, goal + 1, target);
-        }
-      } catch (error) {
-        problem = error;
-      }
-      let entries = candidates(category);
-      const required = requiredKinds(category);
-      const exhausted = () => required.every((k) => streams[k].exhausted);
-      const reliable = (count) =>
-        required.every(
-          (k) =>
-            streams[k].exhausted ||
-            entries.filter((t) => t.kind === k).length >= count,
-        );
-      const start = (page - 1) * 10;
-      if (!reliable(goal)) {
-        target.failure =
-          problem ||
-          unavailable(
-            streams[category === "all" ? "group" : category],
-            category,
-          );
-        return { error: target.failure };
-      }
-      if (entries.length <= start) return { items: [], next: "no" };
-      const keys = entries.slice(start, goal).map((t) => t.key);
-      entries = candidates(category);
-      return {
-        items: (view.pages.get(page) || keys).map((key) => known.get(key)),
-        next:
-          reliable(goal + 1) && entries.length > goal
-            ? "yes"
-            : exhausted()
-              ? "no"
-              : "unknown",
-        warning: problem,
-      };
-    };
-    target.pending = work().finally(() => {
-      target.pending = null;
-    });
-    return target.pending;
+    if (!view.pending && !view.failure) run(view);
+    const result = snapshot(category, page);
+    if (result) return Promise.resolve(result);
+    return new Promise((resolve) => view.waiters.add({ page, resolve }));
   }
   function commit(category, page, items) {
     const view = views[category];
-    if (!view.pages.has(page))
+    if (!view.pages.has(page)) {
+      if (!view.pages.size || page > Math.max(...view.pages.keys()))
+        view.frozenAt = received;
       view.pages.set(
         page,
         items.map((item) => item.key),
       );
+    }
   }
-  return { prepare, commit, setForeground };
+  return { prepare, snapshot, commit, setForeground };
 }

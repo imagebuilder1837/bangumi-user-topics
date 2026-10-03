@@ -30,7 +30,12 @@ test("all merges skewed streams, shares cached prefixes and keeps category pages
   );
   assert.deepEqual(
     app.requests.map((x) => x.request.pathname),
-    ["/v1/search/group-topics", "/v1/search/subject-topics"],
+    [
+      "/v1/search/group-topics",
+      "/v1/search/subject-topics",
+      "/v1/search/group-topics",
+      "/v1/search/subject-topics",
+    ],
   );
   app.document.querySelector("[data-next]").click();
   await tick();
@@ -41,7 +46,7 @@ test("all merges skewed streams, shares cached prefixes and keeps category pages
         "[data-user-topics-view] [data-page-link]",
       ),
     ].map((a) => a.textContent),
-    ["1", "3"],
+    ["1", "3", "4", "5", "6"],
   );
   assert.equal(
     app.document.querySelector(".entry-list a.l").href,
@@ -57,7 +62,7 @@ test("all merges skewed streams, shares cached prefixes and keeps category pages
         "[data-user-topics-view] [data-page-link]",
       ),
     ].map((a) => a.textContent),
-    ["2"],
+    ["2", "3"],
   );
   assert.equal(
     app.document.querySelector(".entry-list a.l").href,
@@ -78,7 +83,7 @@ test("all merges skewed streams, shares cached prefixes and keeps category pages
         "[data-user-topics-view] [data-page-link]",
       ),
     ].map((a) => a.textContent),
-    ["1", "3"],
+    ["1", "3", "4", "5", "6"],
   );
   assert.equal(
     app.document.querySelector(".entry-list a.l").href,
@@ -123,7 +128,7 @@ test("late insertions stay excluded only from frozen category; raw offsets advan
     app.requests
       .filter((x) => x.request.pathname.endsWith("group-topics"))
       .map((x) => x.request.searchParams.get("offset")),
-    ["0", "11", "21", "22"],
+    ["0", "11", "22", "23", "24", "25"],
   );
   app.window.location.hash = "#posts";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
@@ -175,7 +180,7 @@ test("all does not present one stream as complete when the other fails; retry re
   assert.equal(
     app.requests.filter((x) => x.request.pathname.endsWith("group-topics"))
       .length,
-    1,
+    3,
   );
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   app.dom.window.close();
@@ -312,7 +317,7 @@ test("invalid SearchEncore diagnostic objects cannot turn an empty batch into an
   }
 });
 
-test("a failed lookahead preserves the reliable ten hits and retry fetches only one", async () => {
+test("a failed expansion preserves the reliable ten hits and retries only the missing prefix", async () => {
   let fail = true;
   const app = setup({
     respond: (offset, limit) => {
@@ -335,7 +340,7 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
   );
   assert.match(
     status.firstChild.textContent,
-    /无法确认是否还有下一页：temporary failure/,
+    /预加载未完成：temporary failure/,
   );
   assert.equal(status.querySelector("a.chiiBtn > span").textContent, "重试");
   assert.equal(app.document.querySelector("[data-next]").textContent, "››");
@@ -350,7 +355,7 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
   fail = false;
   app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
-  assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "1");
+  assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "41");
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   assert.equal(
     app.document.querySelector("[data-user-topics-view] [data-page-link]")
@@ -360,7 +365,7 @@ test("a failed lookahead preserves the reliable ten hits and retry fetches only 
   app.dom.window.close();
 });
 
-test("duplicate batches advance raw offsets and stop at three requests without declaring an empty archive", async () => {
+test("three consecutive duplicate batches advance raw offsets without declaring exhaustion", async () => {
   const app = setup({
     respond: (offset, limit) => envelope([hit(1)], offset, limit),
   });
@@ -368,12 +373,12 @@ test("duplicate batches advance raw offsets and stop at three requests without d
   await tick();
   assert.deepEqual(
     app.requests.map(({ request }) => request.searchParams.get("offset")),
-    ["0", "1", "2"],
+    ["0", "1", "2", "3"],
   );
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 0);
   assert.match(
     app.document.querySelector("[role=status]").textContent,
-    /无法确定/,
+    /连续三批没有有效新增/,
   );
   app.dom.window.close();
 });

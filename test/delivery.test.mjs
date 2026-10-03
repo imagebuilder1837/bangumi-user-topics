@@ -120,6 +120,8 @@ test("installed all-posts view retries a failed stream without refetching the ot
     runScripts: "outside-only",
   });
   dom.window.scrollTo = () => {};
+  const delay = dom.window.setTimeout.bind(dom.window);
+  dom.window.setTimeout = (fn, ms) => delay(fn, ms === 15000 ? ms : 0);
   let failSubject = true;
   const requests = [];
   dom.window.fetch = async (url, init) => {
@@ -166,7 +168,7 @@ test("installed all-posts view retries a failed stream without refetching the ot
       .length,
     10,
   );
-  assert.equal(requests.filter((request) => request.group).length, 1);
+  assert.equal(requests.filter((request) => request.group).length, 3);
   assert.ok(requests.every((request) => request.credentials === "omit"));
   dom.window.location.hash = "#posts/subject";
   dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
@@ -202,7 +204,7 @@ test("installed merged pagination keeps an in-flight result for return without r
     return {
       ok: true,
       json: async () => ({
-        data: Array.from({ length: limit }, (_, i) => ({
+        data: Array.from({ length: offset ? limit : 11 }, (_, i) => ({
           id: offset + i + 1,
           kind: group ? 0 : 1,
           parentID: group ? 2 : 307,
@@ -309,8 +311,9 @@ test("installable bundle completes the group reading and pagination journey", as
     "讨论 11",
   );
   assert.deepEqual(requests, [
-    { offset: 0, limit: 11 },
-    { offset: 11, limit: 10 },
+    { offset: 0, limit: 50 },
+    { offset: 50, limit: 50 },
+    { offset: 100, limit: 1 },
   ]);
   dom.window.close();
 });

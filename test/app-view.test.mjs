@@ -68,7 +68,7 @@ test("post metadata renders safely with native links and timestamps", async () =
   });
   enter(app);
   await tick();
-  assert.equal(app.requests[0].request.searchParams.get("limit"), "11");
+  assert.equal(app.requests[0].request.searchParams.get("limit"), "50");
   assert.equal(
     app.document.querySelectorAll("[data-user-topics-view] .entry-list .item")
       .length,
@@ -91,7 +91,7 @@ test("post metadata renders safely with native links and timestamps", async () =
   app.dom.window.close();
 });
 
-test("one lookahead reveals the next page and confirmed numbers permit direct jumps", async () => {
+test("prefetched pages permit direct jumps within the native window", async () => {
   const app = setup({
     respond: (offset, limit) =>
       envelope(
@@ -102,7 +102,7 @@ test("one lookahead reveals the next page and confirmed numbers permit direct ju
   });
   enter(app);
   await tick();
-  assert.equal(app.requests[0].request.searchParams.get("limit"), "11");
+  assert.equal(app.requests[0].request.searchParams.get("limit"), "50");
   const next = app.document.querySelector("[data-next]");
   assert.equal(next.textContent, "››");
   assert.equal(next.className, "p");
@@ -113,7 +113,18 @@ test("one lookahead reveals the next page and confirmed numbers permit direct ju
         "[data-user-topics-view] .page_inner a.p",
       ),
     ].map((a) => a.textContent);
-  assert.deepEqual(pageLinks(), ["2", "››"]);
+  assert.deepEqual(pageLinks(), [
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "››",
+  ]);
   next.click();
   await tick();
   const previous = app.document.querySelector(
@@ -121,16 +132,39 @@ test("one lookahead reveals the next page and confirmed numbers permit direct ju
   );
   assert.equal(previous.textContent, "‹‹");
   assert.equal(previous.getAttribute("aria-label"), "上一页");
-  assert.equal(app.requests[1].request.searchParams.get("offset"), "11");
-  assert.equal(app.requests[1].request.searchParams.get("limit"), "10");
+  assert.equal(app.requests[1].request.searchParams.get("offset"), "50");
+  assert.equal(app.requests[1].request.searchParams.get("limit"), "50");
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
-  assert.deepEqual(pageLinks(), ["‹‹", "1", "3", "››"]);
+  assert.deepEqual(pageLinks(), [
+    "‹‹",
+    "1",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "››",
+  ]);
   app.document
     .querySelector("[data-user-topics-view] [data-page-link='1']")
     .click();
   await tick();
   assert.equal(app.document.querySelector("[data-page]").textContent, "1");
-  assert.deepEqual(pageLinks(), ["2", "3", "››"]);
+  assert.deepEqual(pageLinks(), [
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "››",
+  ]);
   app.document
     .querySelector("[data-user-topics-view] [data-page-link='3']")
     .click();
@@ -170,10 +204,18 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
     app.document.querySelector("[data-user-topics-view] [data-next]").click();
     await tick();
   }
-  assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(numbers(), [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
   const scrollsAfterArrows = app.scrolls.length;
+  await jump(11);
+  await jump(9);
+  await jump(7);
   await jump(5);
-  assert.deepEqual(app.scrolls.slice(scrollsAfterArrows), [[0, 0]]);
+  assert.deepEqual(app.scrolls.slice(scrollsAfterArrows), [
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+  ]);
   assert.deepEqual(numbers(), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(app.document.querySelector("[data-page]").textContent, "5");
   await jump(3);
@@ -181,8 +223,8 @@ test("confirmed pages slide in a ten-number window and allow distant jumps", asy
   await jump(1);
   assert.deepEqual(numbers(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   await jump(10);
-  assert.deepEqual(numbers(), [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-  assert.equal(app.scrolls.length, scrollsAfterArrows + 4);
+  assert.deepEqual(numbers(), [8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+  assert.equal(app.scrolls.length, scrollsAfterArrows + 7);
   app.dom.window.close();
 });
 
@@ -195,7 +237,9 @@ test("a confirmed page scrolls before loading and stays there after failure and 
       scrollsAtRequest.push(app.scrolls.length);
       if (offset === 11 && fail) throw Error("temporary failure");
       return envelope(
-        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        Array.from({ length: offset ? limit : 11 }, (_, i) =>
+          hit(offset + i + 1),
+        ),
         offset,
         limit,
       );
@@ -208,7 +252,7 @@ test("a confirmed page scrolls before loading and stays there after failure and 
     .click();
   assert.deepEqual(app.scrolls, [[0, 0]]);
   await tick();
-  assert.deepEqual(scrollsAtRequest, [0, 1]);
+  assert.deepEqual(scrollsAtRequest, [0, 0, 0, 0]);
   assert.equal(app.document.querySelector("[data-page]").textContent, "1");
   assert.equal(
     app.document.querySelector("[data-user-topics-view] [data-page-link='2']")
@@ -274,7 +318,9 @@ test("retrying a failed next page does not scroll after it succeeds", async () =
     respond: (offset, limit) => {
       if (offset === 11 && fail) throw Error("temporary failure");
       return envelope(
-        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        Array.from({ length: offset ? limit : 11 }, (_, i) =>
+          hit(offset + i + 1),
+        ),
         offset,
         limit,
       );

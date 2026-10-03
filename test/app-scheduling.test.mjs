@@ -100,10 +100,17 @@ test("timeout frees the stream even when fetch ignores abort", async () => {
   assert.equal(calls, 1);
   expire();
   await tick();
-  assert.match(app.document.querySelector("[role=status]").textContent, /超时/);
-  app.document.querySelector("[role=status] a.chiiBtn").click();
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /正在加载/,
+  );
+  expire();
   await tick();
   assert.equal(calls, 2);
+  assert.match(
+    app.document.querySelector("[role=status]").textContent,
+    /没有找到已收录/,
+  );
   app.dom.window.close();
 });
 
@@ -124,7 +131,12 @@ test("an all-target failure stops further requests for that target while caching
   await tick();
   assert.deepEqual(
     app.requests.map(({ request }) => request.pathname),
-    ["/v1/search/group-topics", "/v1/search/subject-topics"],
+    [
+      "/v1/search/group-topics",
+      "/v1/search/subject-topics",
+      "/v1/search/group-topics",
+      "/v1/search/group-topics",
+    ],
   );
   app.dom.window.close();
 });
@@ -272,7 +284,9 @@ test("background pagination commits on return without stealing scroll", async ()
               );
           })
         : envelope(
-            Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+            Array.from({ length: offset ? limit : 11 }, (_, i) =>
+              hit(offset + i + 1),
+            ),
             offset,
             limit,
           ),
@@ -293,21 +307,21 @@ test("background pagination commits on return without stealing scroll", async ()
   app.dom.window.close();
 });
 
-test("leaving and reentering a depleted target does not reset its budget", async () => {
+test("leaving and reentering a stalled expansion does not resume requests", async () => {
   const app = setup({
     respond: (offset, limit) => envelope([hit(1)], offset, limit),
   });
   enter(app);
   await tick();
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 4);
   app.window.location.hash = "#other";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   enter(app);
   await tick();
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 4);
   assert.match(
     app.document.querySelector("[role=status]").textContent,
-    /无法确定/,
+    /连续三批没有有效新增/,
   );
   app.dom.window.close();
 });

@@ -118,6 +118,8 @@ export function normalizeBatch(
   return items;
 }
 
+export class RetryableError extends Error {}
+
 export class RateLimitError extends Error {
   constructor(retryAfter) {
     super("SearchEncore 请求过于频繁，请稍后重试");
@@ -159,10 +161,18 @@ export function createSearchEncore(
     try {
       return await Promise.race([
         (async () => {
-          const response = await fetch(url.href, {
-            credentials: "omit",
-            signal: controller.signal,
-          });
+          let response;
+          try {
+            response = await fetch(url.href, {
+              credentials: "omit",
+              signal: controller.signal,
+            });
+          } catch (error) {
+            throw new RetryableError(
+              error?.message || "SearchEncore 网络请求失败",
+              { cause: error },
+            );
+          }
           if (response.status === 429) {
             const value = response.headers?.get("Retry-After");
             const seconds =
@@ -175,9 +185,27 @@ export function createSearchEncore(
               now() + (Number.isFinite(wait) && wait >= 0 ? wait : 60000),
             );
           }
-          if (!response.ok)
-            throw new Error(`SearchEncore HTTP ${response.status}`);
-          return normalizeBatch(await response.json(), {
+          if (!response.ok) {
+            const ErrorType =
+              response.status === 408 ||
+              (response.status >= 500 && response.status <= 599)
+                ? RetryableError
+                : Error;
+            throw new ErrorType(`SearchEncore HTTP ${response.status}`);
+          }
+          let payload;
+          try {
+            payload = await response.json();
+          } catch (error) {
+            // Body transport/decode failures differ from invalid JSON syntax.
+            if (error?.name === "TypeError" || error?.name === "AbortError")
+              throw new RetryableError(
+                error.message || "SearchEncore 响应体读取失败",
+                { cause: error },
+              );
+            throw error;
+          }
+          return normalizeBatch(payload, {
             offset,
             limit,
             origin,
@@ -187,7 +215,7 @@ export function createSearchEncore(
         new Promise((_, reject) => {
           timeout = delay(() => {
             controller.abort();
-            reject(new Error("SearchEncore 请求超时，请重试"));
+            reject(new RetryableError("SearchEncore 请求超时，请重试"));
           }, 15000);
         }),
       ]);

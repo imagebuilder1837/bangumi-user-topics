@@ -9,7 +9,7 @@
 ## 分篇
 
 - [`spec/host-view.md`](spec/host-view.md) — 支持范围、入口插入、hash 路由、宿主接管与恢复、focus 与共存、失效与重入
-- [`spec/feed.md`](spec/feed.md) — 数据源边界、归一化与 envelope 校验、缓存与排序、冻结页、合并分页与前瞻、调度与错误分类
+- [`spec/feed.md`](spec/feed.md) — 数据源边界、归一化与 envelope 校验、缓存与排序、冻结页、合并分页与分段预加载、调度与错误分类
 - [`spec/ui.md`](spec/ui.md) — 帖子视图、列表条目、分页交互、状态文案、滚动与可访问性
 
 ## 范围

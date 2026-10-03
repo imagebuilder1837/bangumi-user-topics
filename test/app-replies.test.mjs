@@ -30,7 +30,7 @@ test("direct replies route queries the target author and exposes the fourth cate
   assert.equal(request.searchParams.get("q"), "user:sai");
   assert.equal(request.searchParams.get("source"), "all");
   assert.equal(request.searchParams.get("sort"), "newest");
-  assert.equal(request.searchParams.get("limit"), "11");
+  assert.equal(request.searchParams.get("limit"), "50");
   assert.equal(init.credentials, "omit");
   assert.deepEqual(
     [...app.document.querySelectorAll("[data-user-topics-subnav] a")].map(
@@ -242,7 +242,9 @@ test("reply pages freeze, retain first data and advance raw cursors past duplica
             ]
           : offset === 21
             ? [replyHit(99, { createdAt: 1697299999 })]
-            : Array.from({ length: limit }, (_, i) => replyHit(offset + i + 1)),
+            : Array.from({ length: offset ? limit : 11 }, (_, i) =>
+                replyHit(offset + i + 1),
+              ),
         offset,
         limit,
       ),
@@ -252,7 +254,7 @@ test("reply pages freeze, retain first data and advance raw cursors past duplica
   const first = [...view.querySelectorAll("h2 a")].map((a) => a.href);
   assert.equal(first.length, 10);
   assert.equal(view.querySelector('[data-page-link="2"]').textContent, "2");
-  assert.equal(view.querySelector('[data-page-link="3"]'), null);
+  assert.equal(view.querySelector('[data-page-link="3"]').textContent, "3");
   view.querySelector("[data-next]").click();
   await tick();
   assert.equal(view.querySelector("[data-page]").textContent, "2");
@@ -277,10 +279,12 @@ test("reply pages freeze, retain first data and advance raw cursors past duplica
       request.searchParams.get("limit"),
     ]),
     [
-      ["0", "11"],
-      ["11", "10"],
-      ["21", "1"],
-      ["22", "1"],
+      ["0", "50"],
+      ["11", "50"],
+      ["21", "50"],
+      ["22", "50"],
+      ["72", "31"],
+      ["103", "1"],
     ],
   );
   view.querySelector('[data-page-link="1"]').click();
@@ -298,21 +302,21 @@ test("reply pages freeze, retain first data and advance raw cursors past duplica
   app.dom.window.close();
 });
 
-test("reply request budget is finite and does not reset on reentry", async () => {
+test("reply expansion pauses after three duplicate batches and stays paused on reentry", async () => {
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts/replies",
     respond: (offset, limit) => envelope([replyHit(1)], offset, limit),
   });
   await tick();
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 4);
   assert.match(
     app.document.querySelector("[role=status]").textContent,
-    /无法确定/,
+    /连续三批没有有效新增/,
   );
   navigate(app, "#other");
   navigate(app, "#posts/replies");
   await tick();
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 4);
   app.dom.window.close();
 });
 
@@ -324,7 +328,9 @@ test("failed reply pagination retains the old page and explicitly retries the sa
       envelope(
         offset === 11 && bad
           ? [replyHit(12, { id: Number.MAX_SAFE_INTEGER + 1 })]
-          : Array.from({ length: limit }, (_, i) => replyHit(offset + i + 1)),
+          : Array.from({ length: offset ? limit : 11 }, (_, i) =>
+              replyHit(offset + i + 1),
+            ),
         offset,
         limit,
       ),
@@ -345,7 +351,7 @@ test("failed reply pagination retains the old page and explicitly retries the sa
   assert.equal(view.querySelector("[data-page]").textContent, "2");
   assert.deepEqual(
     app.requests.map(({ request }) => request.searchParams.get("offset")),
-    ["0", "11", "11"],
+    ["0", "11", "11", "61"],
   );
   assert.equal(app.scrolls.length, 1);
   app.dom.window.close();

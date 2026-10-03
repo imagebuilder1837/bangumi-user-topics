@@ -51,9 +51,22 @@ export function renderPosts(
     onNext,
     onPrevious,
     onRetry,
+    preserveFocus = false,
   },
 ) {
   const d = root.ownerDocument;
+  const active =
+    preserveFocus && root.contains(d.activeElement) ? d.activeElement : null;
+  const rowLink = [...root.querySelectorAll(".entry-list a")].indexOf(active);
+  const focusKey = (node) => {
+    if (node?.hasAttribute("data-page-link"))
+      return `page:${node.dataset.pageLink}`;
+    if (node?.hasAttribute("data-next")) return "next";
+    if (node?.closest("[role=status]")) return "retry";
+    if (node?.getAttribute("aria-label") === "上一页") return "previous";
+    return null;
+  };
+  const key = focusKey(active);
   root.replaceChildren();
   const header = el(d, "div", "flex-center-v");
   const title = el(d, "h2", "title", postsTitle(nickname, category));
@@ -65,6 +78,7 @@ export function renderPosts(
   root.append(header);
   const contentName = category === "replies" ? "评论回复" : "帖子";
   if (state.loading) message.textContent = `正在加载${contentName}…`;
+  else if (state.prefetching) message.textContent = `正在预加载${contentName}…`;
   if (state.items?.length) {
     const list = el(d, "div", "entry-list");
     for (const item of state.items) {
@@ -107,7 +121,7 @@ export function renderPosts(
   if (state.error || state.warning) {
     message.textContent =
       state.error?.message ||
-      `无法确认是否还有下一页：${state.warning?.message || "请继续重试"}`;
+      `预加载未完成：${state.warning?.message || "请继续重试"}`;
     const retry = el(d, "a", "chiiBtn");
     retry.href = category === "all" ? "#posts" : `#posts/${category}`;
     retry.append(el(d, "span", "", "重试"));
@@ -172,6 +186,17 @@ export function renderPosts(
       pages.append(next);
     }
     root.append(pages);
+  }
+  // Only retain an already-owned focus, never pull focus from the host or scroll.
+  if (active && d.activeElement === d.body) {
+    const replacement =
+      rowLink >= 0
+        ? root.querySelectorAll(".entry-list a")[rowLink]
+        : key &&
+          [...root.querySelectorAll("a")].find(
+            (node) => focusKey(node) === key,
+          );
+    replacement?.focus({ preventScroll: true });
   }
 }
 function formatTime(seconds) {

@@ -73,6 +73,8 @@ export function start(
       user: host.user,
       origin: window.location.origin,
       now: timers?.now,
+      delay: timers?.setTimeout,
+      onChange: refresh,
     });
     const states = Object.fromEntries(
       Object.keys(categories).map((hash) => [
@@ -198,7 +200,7 @@ export function start(
     window.getComputedStyle(session.host.columns).display === "none" &&
     (!session.host.originalSub ||
       window.getComputedStyle(session.host.originalSub).display === "none");
-  function paint() {
+  function paint(preserveFocus = false) {
     if (!visible || !session) return;
     const root = document.querySelector("[data-user-topics-view]");
     const state = session.states[category];
@@ -211,11 +213,37 @@ export function start(
         state: state.current,
         page: state.page,
         confirmedPage: state.confirmedPage,
+        preserveFocus,
         onPage: (target) => load(category, target),
-        onNext: () => load(category, state.page + 1),
+        onNext: () =>
+          load(
+            category,
+            state.page + 1,
+            false,
+            state.current.next === "unknown",
+          ),
         onPrevious: () => load(category, state.page - 1),
         onRetry: () => load(category, state.current.target || state.page, true),
       });
+  }
+  function refresh(filter) {
+    if (!session || !visible || category !== filter) return;
+    if (!activeHostValid()) {
+      route();
+      return;
+    }
+    const state = session.states[filter];
+    if (state.pending || state.ready || !state.current.items?.length) return;
+    const result = session.feed.snapshot(filter, state.page);
+    if (!result || result.error) return;
+    state.confirmedPage = Math.max(state.confirmedPage, result.confirmedPage);
+    state.current = {
+      ...state.current,
+      next: result.next,
+      warning: result.warning,
+      prefetching: result.prefetching,
+    };
+    paint(true);
   }
   function publish(filter) {
     if (!session) return;
@@ -225,7 +253,10 @@ export function start(
       route();
       return;
     }
-    const { target, result } = state.ready;
+    const { target } = state.ready;
+    const result = state.ready.result.error
+      ? state.ready.result
+      : session.feed.snapshot(filter, target) || state.ready.result;
     state.ready = null;
     if (result.error)
       state.current = {
@@ -239,19 +270,22 @@ export function start(
       state.page = target;
       state.confirmedPage = Math.max(
         state.confirmedPage,
-        target + (result.next === "yes" ? 1 : 0),
+        result.confirmedPage,
+        target,
       );
-      state.current = { ...result, loading: false };
+      state.current = { ...result, loading: false, target };
     } else
       state.current = {
         ...state.current,
         loading: false,
         next: "no",
         error: null,
+        warning: result.warning,
+        prefetching: result.prefetching,
       };
     paint();
   }
-  async function load(filter, target, retry = false) {
+  async function load(filter, target, retry = false, continuing = false) {
     if (!visible || !session || category !== filter) return;
     if (!activeHostValid()) {
       route();
@@ -273,7 +307,7 @@ export function start(
       target,
     };
     paint();
-    const job = session.feed.prepare(filter, target, retry);
+    const job = session.feed.prepare(filter, target, retry || continuing);
     state.pending = job;
     let result;
     try {
@@ -348,7 +382,7 @@ export function start(
     else if (state.pending) {
       state.current = { ...state.current, loading: true };
       paint();
-    }
+    } else refresh(next);
   }
   window.addEventListener("hashchange", () => route());
   route();

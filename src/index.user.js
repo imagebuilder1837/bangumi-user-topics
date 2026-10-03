@@ -410,6 +410,8 @@
     return items;
   }
 
+  class RetryableError extends Error {}
+
   class RateLimitError extends Error {
     constructor(retryAfter) {
       super("SearchEncore 请求过于频繁，请稍后重试");
@@ -451,10 +453,18 @@
       try {
         return await Promise.race([
           (async () => {
-            const response = await fetch(url.href, {
-              credentials: "omit",
-              signal: controller.signal,
-            });
+            let response;
+            try {
+              response = await fetch(url.href, {
+                credentials: "omit",
+                signal: controller.signal,
+              });
+            } catch (error) {
+              throw new RetryableError(
+                error?.message || "SearchEncore 网络请求失败",
+                { cause: error },
+              );
+            }
             if (response.status === 429) {
               const value = response.headers?.get("Retry-After");
               const seconds =
@@ -467,9 +477,27 @@
                 now() + (Number.isFinite(wait) && wait >= 0 ? wait : 60000),
               );
             }
-            if (!response.ok)
-              throw new Error(`SearchEncore HTTP ${response.status}`);
-            return normalizeBatch(await response.json(), {
+            if (!response.ok) {
+              const ErrorType =
+                response.status === 408 ||
+                (response.status >= 500 && response.status <= 599)
+                  ? RetryableError
+                  : Error;
+              throw new ErrorType(`SearchEncore HTTP ${response.status}`);
+            }
+            let payload;
+            try {
+              payload = await response.json();
+            } catch (error) {
+              // Body transport/decode failures differ from invalid JSON syntax.
+              if (error?.name === "TypeError" || error?.name === "AbortError")
+                throw new RetryableError(
+                  error.message || "SearchEncore 响应体读取失败",
+                  { cause: error },
+                );
+              throw error;
+            }
+            return normalizeBatch(payload, {
               offset,
               limit,
               origin,
@@ -479,7 +507,7 @@
           new Promise((_, reject) => {
             timeout = delay(() => {
               controller.abort();
-              reject(new Error("SearchEncore 请求超时，请重试"));
+              reject(new RetryableError("SearchEncore 请求超时，请重试"));
             }, 15000);
           }),
         ]);
@@ -505,7 +533,10 @@
         : "无法确定当前页，请继续重试",
     );
 
-  function createTopicFeed(search, { user, origin, now = Date.now }) {
+  function createTopicFeed(
+    search,
+    { user, origin, now = Date.now, delay = setTimeout, onChange = () => {} },
+  ) {
     const streams = Object.fromEntries(
       kinds.map((kind) => [
         kind,
@@ -516,7 +547,18 @@
     const views = Object.fromEntries(
       ["all", ...kinds].map((kind) => [
         kind,
-        { pages: new Map(), excluded: new Set(), targets: new Map() },
+        {
+          category: kind,
+          pages: new Map(),
+          excluded: new Set(),
+          frozenAt: 0,
+          goal: 0,
+          failure: null,
+          pending: null,
+          restart: false,
+          waiters: new Set(),
+          stalled: Object.fromEntries(kinds.map((kind) => [kind, 0])),
+        },
       ]),
     );
     let received = 0;
@@ -525,7 +567,6 @@
     let cooldown = 0;
     let paused = false;
     const queue = [];
-    const active = new Set();
     let scheduled = false;
 
     function setForeground(category) {
@@ -544,14 +585,9 @@
       if (paused) return;
       while (inFlight < 3 && queue.length) {
         const front = queue.findIndex((job) => job.categories.has(foreground));
-        // A foreground target waiting for a response or its next request owns free slots.
-        if (
-          front < 0 &&
-          [...active].some((target) => target.category === foreground)
-        )
-          return;
         const job = queue.splice(front < 0 ? 0 : front, 1)[0];
         inFlight++;
+        job.attempts++;
         search({
           user,
           origin,
@@ -565,23 +601,21 @@
               cooldown = Math.max(cooldown, error.retryAfter);
               for (const waiting of queue.splice(0)) waiting.reject(error);
             }
-            job.reject(error);
+            if (error instanceof RetryableError && job.attempts < 3) {
+              delay(() => {
+                if (paused) job.reject(new Error("请求已暂停，请稍后重试"));
+                else {
+                  queue.push(job);
+                  schedule();
+                }
+              }, job.attempts * 1000);
+            } else job.reject(error);
           })
           .finally(() => {
             inFlight--;
             schedule();
           });
       }
-    }
-    function request(kind, offset, limit, category) {
-      const job = { kind, offset, limit, categories: new Set([category]) };
-      const promise = new Promise((resolve, reject) => {
-        job.resolve = resolve;
-        job.reject = reject;
-      });
-      streams[kind].pending = { promise, job };
-      schedule();
-      return streams[kind].pending;
     }
     function candidates(category) {
       const view = views[category];
@@ -595,6 +629,7 @@
           if (view.excluded.has(item.key)) continue;
           if (
             boundary &&
+            item.received >= view.frozenAt &&
             !displayed.has(item.key) &&
             order(item, boundary) <= 0
           ) {
@@ -607,56 +642,119 @@
       result.sort(order);
       return result;
     }
-
-    async function fill(category, count, target) {
+    function snapshot(category, page) {
+      const view = views[category];
+      const entries = candidates(category);
       const required = requiredKinds(category);
-      active.add(target);
+      const exhausted = required.every((kind) => streams[kind].exhausted);
+      const depth = Math.min(
+        entries.length,
+        ...required.map((kind) =>
+          streams[kind].exhausted
+            ? Infinity
+            : entries.filter((item) => item.kind === kind).length,
+        ),
+      );
+      const frozen = view.pages.get(page);
+      const goal = page * 10;
+      if (!frozen && depth < goal && !exhausted)
+        return view.failure && !view.restart ? { error: view.failure } : null;
+      return {
+        items: frozen
+          ? frozen.map((key) => known.get(key))
+          : entries.slice((page - 1) * 10, goal),
+        next: depth > goal ? "yes" : exhausted ? "no" : "unknown",
+        confirmedPage: Math.ceil(depth / 10),
+        prefetching: Boolean(view.pending),
+        warning: view.failure,
+      };
+    }
+    function notify() {
+      for (const view of Object.values(views)) {
+        if (!view.goal) continue;
+        for (const waiter of view.waiters) {
+          const result = snapshot(view.category, waiter.page);
+          if (result) {
+            view.waiters.delete(waiter);
+            waiter.resolve(result);
+          }
+        }
+        onChange(view.category);
+      }
+    }
+    function request(kind, offset, limit, category) {
+      const stream = streams[kind];
+      const job = {
+        kind,
+        offset,
+        limit,
+        categories: new Set([category]),
+        attempts: 0,
+      };
+      const promise = new Promise((resolve, reject) => {
+        job.resolve = resolve;
+        job.reject = reject;
+      });
+      const pending = { job, promise };
+      stream.pending = pending;
+      pending.promise = promise
+        .then((batch) => {
+          if (!Array.isArray(batch) || batch.length > limit)
+            throw new Error("SearchEncore 返回格式无效");
+          for (const item of batch) {
+            if (!known.has(item.key)) {
+              item.received = received++;
+              known.set(item.key, item);
+              stream.rows.push(item);
+            }
+          }
+          stream.offset += batch.length;
+          if (!batch.length) stream.exhausted = true;
+          notify();
+        })
+        .finally(() => {
+          if (stream.pending === pending) stream.pending = null;
+        });
+      queue.push(job);
+      schedule();
+      return pending;
+    }
+    async function fill(view) {
       try {
         const outcomes = await Promise.allSettled(
-          required.map(async (kind) => {
+          requiredKinds(view.category).map(async (kind) => {
             const stream = streams[kind];
             try {
               while (true) {
-                if (target.blocked) throw target.blocked;
-                const available = candidates(category).filter(
-                  (t) => t.kind === kind,
+                if (view.failure) throw view.failure;
+                const available = candidates(view.category).filter(
+                  (item) => item.kind === kind,
                 ).length;
-                if (available >= count || stream.exhausted) return;
+                if (available >= view.goal || stream.exhausted) return;
                 if (paused) throw new Error("请求已暂停，请稍后重试");
-                if (stream.offset > 5000 || target.requests[kind] >= 3)
-                  throw unavailable(stream, category);
-                let pending = stream.pending;
-                if (!pending) {
-                  const offset = stream.offset;
-                  const limit = Math.min(50, Math.max(1, count - available));
-                  pending = request(kind, offset, limit, category);
-                  queue.push(pending.job);
-                  schedule();
-                  // The cursor and cache update exactly once, regardless of how many targets await this job.
-                  pending.promise = pending.promise
-                    .then((batch) => {
-                      if (!Array.isArray(batch) || batch.length > limit)
-                        throw new Error("SearchEncore 返回格式无效");
-                      for (const item of batch) {
-                        if (!known.has(item.key)) {
-                          item.received = received++;
-                          known.set(item.key, item);
-                          stream.rows.push(item);
-                        }
-                      }
-                      stream.offset += batch.length;
-                      if (!batch.length) stream.exhausted = true;
-                    })
-                    .finally(() => {
-                      if (stream.pending === pending) stream.pending = null;
-                    });
-                }
-                pending.job.categories.add(category);
-                target.requests[kind]++;
+                if (stream.offset > 5000)
+                  throw unavailable(stream, view.category);
+                const pending =
+                  stream.pending ||
+                  request(
+                    kind,
+                    stream.offset,
+                    Math.min(50, view.goal - available),
+                    view.category,
+                  );
+                pending.job.categories.add(view.category);
                 await pending.promise;
+                const after = candidates(view.category).filter(
+                  (item) => item.kind === kind,
+                ).length;
+                view.stalled[kind] =
+                  after > available ? 0 : view.stalled[kind] + 1;
+                if (!stream.exhausted && view.stalled[kind] >= 3)
+                  throw new Error("连续三批没有有效新增，请继续重试");
               }
             } catch (error) {
-              target.blocked ||= error;
+              view.failure ||= error;
+              notify();
               throw error;
             }
           }),
@@ -666,116 +764,65 @@
         );
         if (failed) throw failed.reason;
       } finally {
-        active.delete(target);
         schedule();
       }
     }
-
-    async function prepare(category, page, retry = false) {
+    function reset(view) {
+      view.failure = null;
+      view.stalled = Object.fromEntries(kinds.map((kind) => [kind, 0]));
+    }
+    function run(view) {
+      const goal = view.goal;
+      view.pending = Promise.resolve()
+        .then(() => fill(view))
+        .catch((error) => {
+          view.failure ||= error;
+        })
+        .finally(() => {
+          view.pending = null;
+          if (view.restart && !paused) {
+            view.restart = false;
+            reset(view);
+            run(view);
+          } else {
+            view.restart = false;
+            // One source may have finished before a later click raised the goal.
+            if (!view.failure && !paused && view.goal > goal) run(view);
+          }
+          notify();
+        });
+    }
+    function prepare(category, page, retry = false) {
       const view = views[category];
       if (!view || !Number.isInteger(page) || page < 1)
         throw new Error("无效分类或页码");
-      const id = String(page);
-      let target = view.targets.get(id);
-      if (!target) {
-        target = {
-          category,
-          requests: { group: 0, subject: 0, replies: 0 },
-          failure: null,
-          blocked: null,
-          pending: null,
-        };
-        view.targets.set(id, target);
+      const goal = 101 + 100 * Math.floor((page + 6) / 10);
+      const higher = goal > view.goal;
+      view.goal = Math.max(view.goal, goal);
+      if (retry && paused && now() < cooldown)
+        return Promise.resolve({ error: new Error("请求冷却中，请稍后重试") });
+      if (retry) paused = false;
+      if (retry || higher) {
+        if (view.pending && view.failure) view.restart = true;
+        else if (!view.pending) reset(view);
       }
-      if (target.pending) return target.pending;
-      if (retry) {
-        if (paused && now() < cooldown)
-          return { error: new Error("请求冷却中，请稍后重试") };
-        paused = false;
-        target.requests = { group: 0, subject: 0, replies: 0 };
-        target.failure = null;
-        target.blocked = null;
-        schedule();
-      }
-      const work = async () => {
-        if (view.pages.has(page) && !retry) {
-          const entries = candidates(category);
-          return {
-            items: view.pages.get(page).map((key) => known.get(key)),
-            next:
-              entries.length > page * 10
-                ? "yes"
-                : requiredKinds(category).every((k) => streams[k].exhausted)
-                  ? "no"
-                  : "unknown",
-          };
-        }
-        if (target.failure) return { error: target.failure };
-        const goal = page * 10;
-        let problem = null;
-        try {
-          const cached = candidates(category);
-          const required = requiredKinds(category);
-          if (
-            !required.every(
-              (kind) =>
-                streams[kind].exhausted ||
-                cached.filter((item) => item.kind === kind).length >= goal + 1,
-            )
-          ) {
-            if (paused) throw new Error("请求已暂停，请稍后重试");
-            await fill(category, goal + 1, target);
-          }
-        } catch (error) {
-          problem = error;
-        }
-        let entries = candidates(category);
-        const required = requiredKinds(category);
-        const exhausted = () => required.every((k) => streams[k].exhausted);
-        const reliable = (count) =>
-          required.every(
-            (k) =>
-              streams[k].exhausted ||
-              entries.filter((t) => t.kind === k).length >= count,
-          );
-        const start = (page - 1) * 10;
-        if (!reliable(goal)) {
-          target.failure =
-            problem ||
-            unavailable(
-              streams[category === "all" ? "group" : category],
-              category,
-            );
-          return { error: target.failure };
-        }
-        if (entries.length <= start) return { items: [], next: "no" };
-        const keys = entries.slice(start, goal).map((t) => t.key);
-        entries = candidates(category);
-        return {
-          items: (view.pages.get(page) || keys).map((key) => known.get(key)),
-          next:
-            reliable(goal + 1) && entries.length > goal
-              ? "yes"
-              : exhausted()
-                ? "no"
-                : "unknown",
-          warning: problem,
-        };
-      };
-      target.pending = work().finally(() => {
-        target.pending = null;
-      });
-      return target.pending;
+      if (!view.pending && !view.failure) run(view);
+      const result = snapshot(category, page);
+      if (result) return Promise.resolve(result);
+      return new Promise((resolve) => view.waiters.add({ page, resolve }));
     }
     function commit(category, page, items) {
       const view = views[category];
-      if (!view.pages.has(page))
+      if (!view.pages.has(page)) {
+        if (!view.pages.size || page > Math.max(...view.pages.keys()))
+          view.frozenAt = received;
         view.pages.set(
           page,
           items.map((item) => item.key),
         );
+      }
     }
-    return { prepare, commit, setForeground };
+    return { prepare, snapshot, commit, setForeground };
   }
 
   function el(document, tag, className, text) {
@@ -831,9 +878,22 @@
       onNext,
       onPrevious,
       onRetry,
+      preserveFocus = false,
     },
   ) {
     const d = root.ownerDocument;
+    const active =
+      preserveFocus && root.contains(d.activeElement) ? d.activeElement : null;
+    const rowLink = [...root.querySelectorAll(".entry-list a")].indexOf(active);
+    const focusKey = (node) => {
+      if (node?.hasAttribute("data-page-link"))
+        return `page:${node.dataset.pageLink}`;
+      if (node?.hasAttribute("data-next")) return "next";
+      if (node?.closest("[role=status]")) return "retry";
+      if (node?.getAttribute("aria-label") === "上一页") return "previous";
+      return null;
+    };
+    const key = focusKey(active);
     root.replaceChildren();
     const header = el(d, "div", "flex-center-v");
     const title = el(d, "h2", "title", postsTitle(nickname, category));
@@ -845,6 +905,8 @@
     root.append(header);
     const contentName = category === "replies" ? "评论回复" : "帖子";
     if (state.loading) message.textContent = `正在加载${contentName}…`;
+    else if (state.prefetching)
+      message.textContent = `正在预加载${contentName}…`;
     if (state.items?.length) {
       const list = el(d, "div", "entry-list");
       for (const item of state.items) {
@@ -887,7 +949,7 @@
     if (state.error || state.warning) {
       message.textContent =
         state.error?.message ||
-        `无法确认是否还有下一页：${state.warning?.message || "请继续重试"}`;
+        `预加载未完成：${state.warning?.message || "请继续重试"}`;
       const retry = el(d, "a", "chiiBtn");
       retry.href = category === "all" ? "#posts" : `#posts/${category}`;
       retry.append(el(d, "span", "", "重试"));
@@ -952,6 +1014,17 @@
         pages.append(next);
       }
       root.append(pages);
+    }
+    // Only retain an already-owned focus, never pull focus from the host or scroll.
+    if (active && d.activeElement === d.body) {
+      const replacement =
+        rowLink >= 0
+          ? root.querySelectorAll(".entry-list a")[rowLink]
+          : key &&
+            [...root.querySelectorAll("a")].find(
+              (node) => focusKey(node) === key,
+            );
+      replacement?.focus({ preventScroll: true });
     }
   }
   function formatTime(seconds) {
@@ -1026,6 +1099,8 @@
         user: host.user,
         origin: window.location.origin,
         now: timers?.now,
+        delay: timers?.setTimeout,
+        onChange: refresh,
       });
       const states = Object.fromEntries(
         Object.keys(categories).map((hash) => [
@@ -1155,7 +1230,7 @@
       window.getComputedStyle(session.host.columns).display === "none" &&
       (!session.host.originalSub ||
         window.getComputedStyle(session.host.originalSub).display === "none");
-    function paint() {
+    function paint(preserveFocus = false) {
       if (!visible || !session) return;
       const root = document.querySelector("[data-user-topics-view]");
       const state = session.states[category];
@@ -1168,12 +1243,38 @@
           state: state.current,
           page: state.page,
           confirmedPage: state.confirmedPage,
+          preserveFocus,
           onPage: (target) => load(category, target),
-          onNext: () => load(category, state.page + 1),
+          onNext: () =>
+            load(
+              category,
+              state.page + 1,
+              false,
+              state.current.next === "unknown",
+            ),
           onPrevious: () => load(category, state.page - 1),
           onRetry: () =>
             load(category, state.current.target || state.page, true),
         });
+    }
+    function refresh(filter) {
+      if (!session || !visible || category !== filter) return;
+      if (!activeHostValid()) {
+        route();
+        return;
+      }
+      const state = session.states[filter];
+      if (state.pending || state.ready || !state.current.items?.length) return;
+      const result = session.feed.snapshot(filter, state.page);
+      if (!result || result.error) return;
+      state.confirmedPage = Math.max(state.confirmedPage, result.confirmedPage);
+      state.current = {
+        ...state.current,
+        next: result.next,
+        warning: result.warning,
+        prefetching: result.prefetching,
+      };
+      paint(true);
     }
     function publish(filter) {
       if (!session) return;
@@ -1183,7 +1284,10 @@
         route();
         return;
       }
-      const { target, result } = state.ready;
+      const { target } = state.ready;
+      const result = state.ready.result.error
+        ? state.ready.result
+        : session.feed.snapshot(filter, target) || state.ready.result;
       state.ready = null;
       if (result.error)
         state.current = {
@@ -1197,19 +1301,22 @@
         state.page = target;
         state.confirmedPage = Math.max(
           state.confirmedPage,
-          target + (result.next === "yes" ? 1 : 0),
+          result.confirmedPage,
+          target,
         );
-        state.current = { ...result, loading: false };
+        state.current = { ...result, loading: false, target };
       } else
         state.current = {
           ...state.current,
           loading: false,
           next: "no",
           error: null,
+          warning: result.warning,
+          prefetching: result.prefetching,
         };
       paint();
     }
-    async function load(filter, target, retry = false) {
+    async function load(filter, target, retry = false, continuing = false) {
       if (!visible || !session || category !== filter) return;
       if (!activeHostValid()) {
         route();
@@ -1231,7 +1338,7 @@
         target,
       };
       paint();
-      const job = session.feed.prepare(filter, target, retry);
+      const job = session.feed.prepare(filter, target, retry || continuing);
       state.pending = job;
       let result;
       try {
@@ -1306,7 +1413,7 @@
       else if (state.pending) {
         state.current = { ...state.current, loading: true };
         paint();
-      }
+      } else refresh(next);
     }
     window.addEventListener("hashchange", () => route());
     route();

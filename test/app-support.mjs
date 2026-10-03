@@ -31,7 +31,12 @@ export function setup({
   respond = (offset, limit) => envelope([], offset, limit),
   markup = html,
   fetchOverride,
-  timers,
+  // Most fixtures need completed retry cycles, not real seconds of wall time.
+  // Timing-specific tests inject a manual clock instead.
+  timers = {
+    setTimeout: (fn, ms) => setTimeout(fn, ms === 15000 ? ms : 0),
+    clearTimeout,
+  },
 } = {}) {
   const dom = new JSDOM(markup, { url });
   const scrolls = [];
