@@ -180,7 +180,7 @@ test("all does not present one stream as complete when the other fails; retry re
   assert.equal(
     app.requests.filter((x) => x.request.pathname.endsWith("group-topics"))
       .length,
-    3,
+    2,
   );
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   app.dom.window.close();
@@ -355,7 +355,7 @@ test("a failed expansion preserves the reliable ten hits and retries only the mi
   fail = false;
   app.document.querySelector("[role=status] a.chiiBtn").click();
   await tick();
-  assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "41");
+  assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "40");
   assert.equal(app.document.querySelectorAll(".entry-list .item").length, 10);
   assert.equal(
     app.document.querySelector("[data-user-topics-view] [data-page-link]")

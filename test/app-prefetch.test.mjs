@@ -9,7 +9,7 @@ const numbers = (app) =>
 const rows = (offset, limit) =>
   Array.from({ length: limit }, (_, i) => hit(offset + i + 1));
 
-test("the first page is usable while its 101-item target is still loading", async (t) => {
+test("the first page is usable while its 100-item target is still loading", async (t) => {
   let release;
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts/group",
@@ -52,7 +52,6 @@ test("the first page is usable while its 101-item target is still loading", asyn
     [
       ["0", "50"],
       ["50", "50"],
-      ["100", "1"],
     ],
   );
 });
@@ -69,16 +68,16 @@ test("pages 4 and 14 raise cumulative targets without freezing unvisited cached 
     await tick();
   };
   await jump(3);
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 2);
   await jump(4);
   assert.deepEqual(numbers(app), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-  assert.equal(app.requests.at(-1).request.searchParams.get("offset"), "151");
+  assert.equal(app.requests.at(-1).request.searchParams.get("offset"), "150");
   await jump(11);
   await jump(13);
-  assert.equal(app.requests.length, 5);
+  assert.equal(app.requests.length, 4);
   await jump(14);
   assert.deepEqual(numbers(app), [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
-  assert.equal(app.requests.at(-1).request.searchParams.get("offset"), "251");
+  assert.equal(app.requests.at(-1).request.searchParams.get("offset"), "250");
   await jump(12);
   await jump(10);
   await jump(8);
@@ -90,9 +89,123 @@ test("pages 4 and 14 raise cumulative targets without freezing unvisited cached 
     "Topic 11",
   );
   await jump(1);
-  assert.equal(app.requests.length, 7);
+  assert.equal(app.requests.length, 6);
   assert.deepEqual(numbers(app), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 });
+
+test("a duplicate batch does not count toward the completed 100-item prefix", async (t) => {
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    respond: (offset, limit) =>
+      envelope(
+        rows(offset === 50 ? 0 : offset === 100 ? 50 : offset, limit),
+        offset,
+        limit,
+      ),
+  });
+  t.after(() => app.dom.window.close());
+  await tick();
+  assert.deepEqual(numbers(app), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(
+    app.requests.map(({ request }) => [
+      request.searchParams.get("offset"),
+      request.searchParams.get("limit"),
+    ]),
+    [
+      ["0", "50"],
+      ["50", "50"],
+      ["100", "50"],
+    ],
+  );
+  assert.doesNotMatch(
+    app.document.querySelector("[role=status]").textContent,
+    /预加载/,
+  );
+});
+
+for (const more of [false, true]) {
+  test(`a completed 100-item prefix defers ${more ? "more content" : "exhaustion"} confirmation until continuing`, async (t) => {
+    let release;
+    const app = setup({
+      url: "https://bgm.tv/user/sai/blog#posts/group",
+      respond: (offset, limit) => {
+        const batch = () =>
+          envelope(
+            offset < 100 || more ? rows(offset, limit) : [],
+            offset,
+            limit,
+          );
+        if (offset === 100)
+          return new Promise((resolve) => {
+            release = () => resolve(batch());
+          });
+        return batch();
+      },
+    });
+    t.after(async () => {
+      release?.();
+      await tick();
+      app.dom.window.close();
+    });
+    await tick();
+    assert.equal(app.requests.length, 2);
+    assert.deepEqual(numbers(app), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.doesNotMatch(
+      app.document.querySelector("[role=status]").textContent,
+      /预加载/,
+    );
+    assert.equal(
+      app.document.querySelector("[data-next]").getAttribute("aria-label"),
+      "下一页",
+    );
+
+    app.document.querySelector("[data-page-link='10']").click();
+    await tick();
+    assert.equal(app.document.querySelector("[data-page]").textContent, "10");
+    assert.equal(
+      app.document.querySelector("[data-next]").getAttribute("aria-label"),
+      "下一页（未确认）",
+    );
+    assert.equal(app.document.querySelector("[data-page-link='11']"), null);
+    app.document.querySelector("[data-next]").click();
+    await tick();
+    assert.equal(app.document.querySelector("[data-page]").textContent, "10");
+    release();
+    await tick();
+    assert.equal(
+      app.document.querySelector("[data-page]").textContent,
+      more ? "11" : "10",
+    );
+    assert.equal(
+      app.document.querySelector(".entry-list a.l").textContent,
+      more ? "Topic 101" : "Topic 91",
+    );
+    assert.equal(
+      app.document.querySelectorAll("[data-user-topics-view] .entry-list .item")
+        .length,
+      10,
+    );
+    assert.doesNotMatch(
+      app.document.querySelector("[role=status]").textContent,
+      /预加载|没有找到/,
+    );
+    if (more) {
+      assert.equal(
+        app.document.querySelector("[data-next]").getAttribute("aria-label"),
+        "下一页",
+      );
+      assert.equal(app.requests.length, 4);
+      assert.equal(
+        app.requests.at(-1).request.searchParams.get("offset"),
+        "150",
+      );
+      assert.equal(app.requests.at(-1).request.searchParams.get("limit"), "50");
+    } else {
+      assert.equal(app.document.querySelector("[data-next]"), null);
+      assert.equal(app.requests.length, 3);
+    }
+  });
+}
 
 test("three successful duplicate batches pause expansion rather than claiming exhaustion", async (t) => {
   const app = setup({
@@ -176,7 +289,7 @@ test("a higher target resumes failed work even while another source is still in 
       .filter(({ request }) => request.pathname.endsWith("subject-topics"))
       .at(-1)
       .request.searchParams.get("offset"),
-    "200",
+    "150",
   );
   assert.doesNotMatch(
     app.document.querySelector("[role=status]").textContent,
@@ -245,7 +358,7 @@ test("raising a target also extends a source that already finished the earlier t
     app.requests.filter(({ request }) =>
       request.pathname.endsWith("group-topics"),
     ).length,
-    3,
+    2,
   );
   app.document.querySelector("[data-page-link='4']").click();
   await tick();
@@ -256,14 +369,14 @@ test("raising a target also extends a source that already finished the earlier t
       .filter(({ request }) => request.pathname.endsWith("group-topics"))
       .at(-1)
       .request.searchParams.get("offset"),
-    "151",
+    "150",
   );
   assert.equal(
     app.requests
       .filter(({ request }) => request.pathname.endsWith("subject-topics"))
       .at(-1)
       .request.searchParams.get("offset"),
-    "200",
+    "150",
   );
   assert.deepEqual(numbers(app), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 });
@@ -360,11 +473,11 @@ test("all four categories prepare bounded prefixes and raise them on page four",
     try {
       await tick();
       assert.deepEqual(numbers(app), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], hash);
-      assert.equal(app.requests.length, hash === "#posts" ? 6 : 3, hash);
+      assert.equal(app.requests.length, hash === "#posts" ? 4 : 2, hash);
       app.document.querySelector("[data-page-link='4']").click();
       await tick();
       assert.deepEqual(numbers(app), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11], hash);
-      assert.equal(app.requests.length, hash === "#posts" ? 10 : 5, hash);
+      assert.equal(app.requests.length, hash === "#posts" ? 8 : 4, hash);
     } finally {
       app.dom.window.close();
     }

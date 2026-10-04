@@ -25,14 +25,14 @@ function clock() {
   };
 }
 
-const response = (url) => {
+const response = (url, count) => {
   const offset = Number(url.searchParams.get("offset"));
   const limit = Number(url.searchParams.get("limit"));
   return {
     ok: true,
     json: async () =>
       envelope(
-        Array.from({ length: limit }, (_, i) => hit(offset + i + 1)),
+        Array.from({ length: count ?? limit }, (_, i) => hit(offset + i + 1)),
         offset,
         limit,
       ),
@@ -49,7 +49,10 @@ test("a network request gets three attempts with 1s and 2s waits, successful bat
       const url = new URL(input);
       calls.push(url);
       if (calls.length < 3) throw Error("offline");
-      return response(url);
+      return response(
+        url,
+        url.searchParams.get("offset") === "0" ? 25 : undefined,
+      );
     },
   });
   t.after(() => app.dom.window.close());
@@ -69,7 +72,7 @@ test("a network request gets three attempts with 1s and 2s waits, successful bat
   assert.equal(app.document.querySelector("[data-page]")?.textContent, "1");
   assert.deepEqual(
     calls.map((url) => url.searchParams.get("offset")),
-    ["0", "0", "0", "50", "100"],
+    ["0", "0", "0", "25", "75"],
   );
   assert.equal(
     app.document.querySelectorAll("[data-page], [data-page-link]").length,
@@ -204,7 +207,7 @@ test("a cached page does not hide cooldown errors or auto-resume when the cooldo
   await tick();
   assert.deepEqual(
     calls.map((url) => url.searchParams.get("offset")),
-    ["0", "50", "50", "100"],
+    ["0", "50", "50"],
   );
   assert.doesNotMatch(
     app.document.querySelector("[role=status]").textContent,
@@ -251,7 +254,7 @@ test("response-body transport failures retry, while JSON syntax failures do not"
       if (retries) {
         assert.deepEqual(
           calls.map((url) => url.searchParams.get("offset")),
-          ["0", "0", "0", "50", "100"],
+          ["0", "0", "0", "50"],
           name,
         );
         assert.equal(

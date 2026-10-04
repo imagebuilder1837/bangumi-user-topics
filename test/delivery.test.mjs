@@ -168,7 +168,7 @@ test("installed all-posts view retries a failed stream without refetching the ot
       .length,
     10,
   );
-  assert.equal(requests.filter((request) => request.group).length, 3);
+  assert.equal(requests.filter((request) => request.group).length, 2);
   assert.ok(requests.every((request) => request.credentials === "omit"));
   dom.window.location.hash = "#posts/subject";
   dom.window.dispatchEvent(new dom.window.HashChangeEvent("hashchange"));
@@ -313,7 +313,6 @@ test("installable bundle completes the group reading and pagination journey", as
   assert.deepEqual(requests, [
     { offset: 0, limit: 50 },
     { offset: 50, limit: 50 },
-    { offset: 100, limit: 1 },
   ]);
   dom.window.close();
 });

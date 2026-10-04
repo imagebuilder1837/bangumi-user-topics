@@ -796,7 +796,7 @@
       const view = views[category];
       if (!view || !Number.isInteger(page) || page < 1)
         throw new Error("无效分类或页码");
-      const goal = 101 + 100 * Math.floor((page + 6) / 10);
+      const goal = 100 + 100 * Math.floor((page + 6) / 10);
       const higher = goal > view.goal;
       view.goal = Math.max(view.goal, goal);
       if (retry && paused && now() < cooldown)

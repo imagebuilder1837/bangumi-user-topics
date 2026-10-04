@@ -283,8 +283,8 @@ test("reply pages freeze, retain first data and advance raw cursors past duplica
       ["11", "50"],
       ["21", "50"],
       ["22", "50"],
-      ["72", "31"],
-      ["103", "1"],
+      ["72", "30"],
+      ["102", "1"],
     ],
   );
   view.querySelector('[data-page-link="1"]').click();

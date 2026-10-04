@@ -205,10 +205,10 @@ test("reentry after recovery repaints the cached page without new requests", asy
       ),
   });
   await tick();
-  assert.equal(app.requests.length, 6);
+  assert.equal(app.requests.length, 4);
   app.document.querySelector("[data-next]").click();
   await tick();
-  assert.equal(app.requests.length, 6);
+  assert.equal(app.requests.length, 4);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   const main = app.document.querySelector(".columns").parentElement;
   main.classList.remove("mainWrapper");
@@ -219,7 +219,7 @@ test("reentry after recovery repaints the cached page without new requests", asy
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();
   assert.ok(app.document.querySelector("[data-user-topics-view]"));
-  assert.equal(app.requests.length, 6);
+  assert.equal(app.requests.length, 4);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   assert.equal(app.scrolls.length, before);
   app.dom.window.close();
