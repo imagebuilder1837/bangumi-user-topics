@@ -7,12 +7,13 @@
 | 行为 | 维护源 | 边界 |
 | --- | --- | --- |
 | 启动与路由 | `src/main.mjs`、`src/entry.mjs` | main自动启动；entry装配模块，处理四个精确分类hash与文档标题 |
-| 入口、接管与恢复 | `src/entry.mjs`、`src/host-view.mjs` | 路径与身份校验、宿主守卫、可逆显示/focus；不替换宿主正文 |
+| 入口、接管与恢复 | `src/entry.mjs`、`src/host-view.mjs` | 入口与激活校验、具体失败原因、可逆显示/focus；不替换宿主正文 |
 | 外部数据与领域化 | `src/search-encore.mjs` | 三个搜索endpoint、响应校验、分离主题/回复身份与当前域名URL |
-| 数据流与调度 | `src/topic-feed.mjs` | 原始游标、缓存、分类冻结/排除、主题充分前缀合并、分段预加载、请求重试、共享并发与429暂停 |
+| 数据流 | `src/topic-feed.mjs` | 用户归属、原始游标、缓存、分类冻结/排除、主题充分前缀合并与分段预加载 |
+| 请求调度 | `src/request-scheduler.mjs`、`src/entry.mjs` | 文档内会话共享并发与429暂停、前台优先、请求重试；换用户不重置调度状态 |
 | 视图 | `src/posts-view.mjs` | 四分类导航/标题、列表/原生摘要、状态与分页交互；不自行请求 |
 | 元数据 | `src/metadata.txt`、`package.json` | 人工治理；模板构建时仅替换 `{{VERSION}}`，见 [`agents/metadata.md`](agents/metadata.md) |
 | 单文件交付 | `src/index.user.js` | build生成；不手工编辑header |
 | 构建检查 | `scripts/build.mjs`、`scripts/check.mjs` | 生成单文件、语法/格式、模板/版本与artifact一致性、完整测试 |
 
-测试通过 `test/app-support.mjs` 的应用入口与jsdom fixture验证公开行为：route/host/feed/scheduling/view按职责分篇，`app-replies.test.mjs` 覆盖回复边界及跨分类隔离，`hosts.test.mjs` 覆盖多宿主，`delivery.test.mjs` 验收生成物。
+测试通过 `test/support/posts-page.mjs` 的应用入口与jsdom fixture验证公开行为；文件按领域职责命名。`mounting.test.mjs` 覆盖挂载与扩展共存，`host-view.test.mjs` 覆盖切换与恢复，`hosts.test.mjs` 覆盖多宿主，`replies.test.mjs` 覆盖回复边界及跨分类隔离，`delivery.test.mjs` 验收生成物。

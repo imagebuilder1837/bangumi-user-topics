@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, enter, tick, hit, envelope, html } from "./app-support.mjs";
+import {
+  setup,
+  enter,
+  tick,
+  hit,
+  envelope,
+  html,
+} from "./support/posts-page.mjs";
 import { start } from "../src/entry.mjs";
 
 test("inserts one entry after native blog and does not request on ordinary pages", async () => {
@@ -96,95 +103,33 @@ test("late response after exit never reopens host or steals a newer route", asyn
   app.dom.window.close();
 });
 
-test("removing the host structure while active restores the remaining host state", async () => {
+test("removing the footer while active leaves the view until a normal exit", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
-  const parent = app.document.querySelector(".columns").parentElement;
   const columns = app.document.querySelector(".columns");
-  parent.querySelector("#footer").remove();
+  const root = app.document.querySelector("[data-user-topics-view]");
+  app.document.querySelector("#footer").remove();
   await tick();
-  assert.equal(columns.style.display, "");
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  app.dom.window.close();
-});
-
-test("a failed host hiding condition exits, and only an explicit same-hash click can reenter", async () => {
-  let deliver;
-  const app = setup({
-    url: "https://bgm.tv/user/sai/blog#posts/group",
-    respond: (offset, limit, url) =>
-      url.pathname.endsWith("subject-topics") || offset
-        ? envelope([], offset, limit)
-        : new Promise((resolve) => {
-            deliver = () =>
-              resolve(
-                envelope(
-                  Array.from({ length: limit }, (_, i) => hit(i + 1)),
-                  offset,
-                  limit,
-                ),
-              );
-          }),
-  });
-  await tick();
-  const main = app.document.querySelector(".columns").parentElement;
-  main.classList.remove("mainWrapper");
-  await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  assert.equal(app.window.location.hash, "#posts/group");
-  deliver();
-  await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  main.classList.add("mainWrapper");
-  app.window.location.hash = "#posts";
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+  app.window.location.hash = "#other";
   app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
-  await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  app.document.querySelector("[data-user-topics-link] a").click();
-  await tick();
-  assert.equal(
-    app.document.querySelector(".entry-list a.l")?.textContent,
-    "Topic 1",
-  );
-  assert.equal(app.requests.length, 3);
+  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
+  assert.equal(root.isConnected, false);
   app.dom.window.close();
 });
 
-test("a recovered host reentry on the same hash does not scroll", async () => {
+test("an active same-hash entry click neither revalidates the host nor scrolls", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
-  const main = app.document.querySelector(".columns").parentElement;
   await tick();
-  assert.ok(app.document.querySelector("[data-user-topics-view]"));
-  main.classList.remove("mainWrapper");
-  await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  main.classList.add("mainWrapper");
+  const root = app.document.querySelector("[data-user-topics-view]");
+  app.document
+    .querySelector(".columns")
+    .parentElement.classList.remove("mainWrapper");
   const before = app.scrolls.length;
   app.document.querySelector("[data-user-topics-link] a").click();
   await tick();
-  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+  assert.equal(app.document.querySelector("[data-user-topics-error]"), null);
   assert.equal(app.scrolls.length, before);
-  app.dom.window.close();
-});
-
-test("a still-broken host shows the mount error on the same-hash click without scrolling", async () => {
-  const app = setup({ url: "https://bgm.tv/user/sai/blog#posts" });
-  const main = app.document.querySelector(".columns").parentElement;
-  await tick();
-  main.classList.remove("mainWrapper");
-  await tick();
-  const before = app.scrolls.length;
-  app.document.querySelector("[data-user-topics-link] a").click();
-  await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  assert.equal(app.scrolls.length, before);
-  assert.equal(
-    app.document.querySelector("[data-user-topics-error]")?.textContent,
-    "无法安全挂载帖子视图",
-  );
-  assert.equal(
-    app.window.getComputedStyle(app.document.querySelector(".columns")).display,
-    "block",
-  );
   app.dom.window.close();
 });
 
@@ -211,7 +156,11 @@ test("reentry after recovery repaints the cached page without new requests", asy
   assert.equal(app.requests.length, 4);
   assert.equal(app.document.querySelector("[data-page]").textContent, "2");
   const main = app.document.querySelector(".columns").parentElement;
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   main.classList.remove("mainWrapper");
+  app.window.location.hash = "#posts";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   await tick();
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   main.classList.add("mainWrapper");
@@ -225,56 +174,65 @@ test("reentry after recovery repaints the cached page without new requests", asy
   app.dom.window.close();
 });
 
-test("losing a host CSS hook exits before the original content is exposed", async () => {
+test("host class and ID changes do not suspend the view or expose hidden content", async () => {
   for (const [selector, attribute, value] of [
     [".mainWrapper:has(> .columns)", "class", "not-mainWrapper"],
     ["#headerProfile", "id", "not-headerProfile"],
   ]) {
     const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
     const columns = app.document.querySelector(".columns");
-    await tick();
-    assert.ok(app.document.querySelector("[data-user-topics-view]"));
+    const root = app.document.querySelector("[data-user-topics-view]");
     app.document.querySelector(selector).setAttribute(attribute, value);
     await tick();
-    assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-    assert.equal(columns.isConnected, true);
-    assert.equal(app.window.location.hash, "#posts/group");
+    assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+    assert.equal(app.window.getComputedStyle(columns).display, "none");
+    app.window.location.hash = "#other";
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    assert.notEqual(app.window.getComputedStyle(columns).display, "none");
     app.dom.window.close();
   }
 });
 
-test("moving the original primary navigation out of the profile ends takeover", async () => {
+test("moving the personal navigation does not suspend the active view", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
   const nav = app.document.querySelector("#headerProfile .navTabs");
-  await tick();
-  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  const root = app.document.querySelector("[data-user-topics-view]");
   app.document.body.append(nav);
   await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(root.isConnected, false);
   assert.equal(nav.isConnected, true);
   app.dom.window.close();
 });
 
-test("moving the owned posts view outside its host slot ends takeover", async () => {
+test("a moved owned view is still removed on normal exit, not automatically", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
   await tick();
   const columns = app.document.querySelector(".columns");
   const root = app.document.querySelector("[data-user-topics-view]");
   app.document.body.append(root);
   await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  assert.equal(app.window.getComputedStyle(columns).display, "block");
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(root.isConnected, false);
+  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
   app.dom.window.close();
 });
 
-test("removing the owned category navigation ends takeover", async () => {
+test("removing category navigation does not suspend or automatically repair the view", async () => {
   const app = setup({ url: "https://bgm.tv/user/sai/blog#posts/group" });
   await tick();
-  const columns = app.document.querySelector(".columns");
+  const root = app.document.querySelector("[data-user-topics-view]");
   app.document.querySelector("[data-user-topics-subnav]").remove();
   await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  assert.notEqual(app.window.getComputedStyle(columns).display, "none");
+  assert.equal(app.document.querySelector("[data-user-topics-view]"), root);
+  assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(root.isConnected, false);
   app.dom.window.close();
 });
 
@@ -309,7 +267,7 @@ test("rejects a foreign-origin blog anchor even if its path resembles the target
 test("missing mounting structure keeps the entry but fails visibly without requests", () => {
   const app = setup({
     url: "https://bgm.tv/user/sai/blog#posts/group",
-    markup: html.replace('class="columns columns-center"', 'class="missing"'),
+    markup: html.replace('id="footer"', 'id="missing-footer"'),
   });
   assert.equal(
     app.document.querySelectorAll("[data-user-topics-link]").length,
@@ -318,7 +276,7 @@ test("missing mounting structure keeps the entry but fails visibly without reque
   assert.equal(app.requests.length, 0);
   assert.equal(
     app.document.querySelector("[data-user-topics-error]")?.textContent,
-    "无法安全挂载帖子视图",
+    "帖子视图挂载失败：未找到正文中的 footer 挂载边界。",
   );
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
   assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);

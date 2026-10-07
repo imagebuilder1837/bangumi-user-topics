@@ -1,4 +1,4 @@
-import { RateLimitError, RetryableError } from "./search-encore.mjs";
+import { createRequestScheduler } from "./request-scheduler.mjs";
 
 // Service cursors are shared; displayed identities and late exclusions belong to a category.
 const topicKinds = ["group", "subject"];
@@ -18,7 +18,7 @@ const unavailable = (stream, category) =>
 
 export function createTopicFeed(
   search,
-  { user, origin, now = Date.now, delay = setTimeout, onChange = () => {} },
+  { user, origin, scheduler = createRequestScheduler(), onChange = () => {} },
 ) {
   const streams = Object.fromEntries(
     kinds.map((kind) => [
@@ -46,59 +46,9 @@ export function createTopicFeed(
   );
   let received = 0;
   let foreground = null;
-  let inFlight = 0;
-  let cooldown = 0;
-  let paused = false;
-  const queue = [];
-  let scheduled = false;
-
   function setForeground(category) {
     foreground = category;
-    schedule();
-  }
-  function schedule() {
-    if (scheduled) return;
-    scheduled = true;
-    queueMicrotask(() => {
-      scheduled = false;
-      dispatch();
-    });
-  }
-  function dispatch() {
-    if (paused) return;
-    while (inFlight < 3 && queue.length) {
-      const front = queue.findIndex((job) => job.categories.has(foreground));
-      const job = queue.splice(front < 0 ? 0 : front, 1)[0];
-      inFlight++;
-      job.attempts++;
-      search({
-        user,
-        origin,
-        kind: job.kind,
-        offset: job.offset,
-        limit: job.limit,
-      })
-        .then(job.resolve, (error) => {
-          if (error instanceof RateLimitError) {
-            paused = true;
-            cooldown = Math.max(cooldown, error.retryAfter);
-            for (const waiting of queue.splice(0)) waiting.reject(error);
-          }
-          if (error instanceof RetryableError && job.attempts < 3) {
-            delay(() => {
-              if (paused) job.reject(new Error("请求已暂停，请稍后重试"));
-              else {
-                queue.push(job);
-                schedule();
-              }
-            }, job.attempts * 1000);
-          } else job.reject(error);
-        })
-        .finally(() => {
-          inFlight--;
-          schedule();
-        });
-    }
+    scheduler.wake();
   }
   function candidates(category) {
     const view = views[category];
@@ -167,17 +117,11 @@ export function createTopicFeed(
   }
   function request(kind, offset, limit, category) {
     const stream = streams[kind];
-    const job = {
-      kind,
-      offset,
-      limit,
-      categories: new Set([category]),
-      attempts: 0,
-    };
-    const promise = new Promise((resolve, reject) => {
-      job.resolve = resolve;
-      job.reject = reject;
-    });
+    const job = { categories: new Set([category]) };
+    const promise = scheduler.submit(
+      () => search({ user, origin, kind, offset, limit }),
+      () => job.categories.has(foreground),
+    );
     const pending = { job, promise };
     stream.pending = pending;
     pending.promise = promise
@@ -198,8 +142,6 @@ export function createTopicFeed(
       .finally(() => {
         if (stream.pending === pending) stream.pending = null;
       });
-    queue.push(job);
-    schedule();
     return pending;
   }
   async function fill(view) {
@@ -214,7 +156,7 @@ export function createTopicFeed(
                 (item) => item.kind === kind,
               ).length;
               if (available >= view.goal || stream.exhausted) return;
-              if (paused) throw new Error("请求已暂停，请稍后重试");
+              if (scheduler.paused) throw new Error("请求已暂停，请稍后重试");
               if (stream.offset > 5000)
                 throw unavailable(stream, view.category);
               const pending =
@@ -245,7 +187,7 @@ export function createTopicFeed(
       const failed = outcomes.find((outcome) => outcome.status === "rejected");
       if (failed) throw failed.reason;
     } finally {
-      schedule();
+      scheduler.wake();
     }
   }
   function reset(view) {
@@ -261,14 +203,14 @@ export function createTopicFeed(
       })
       .finally(() => {
         view.pending = null;
-        if (view.restart && !paused) {
+        if (view.restart && !scheduler.paused) {
           view.restart = false;
           reset(view);
           run(view);
         } else {
           view.restart = false;
           // One source may have finished before a later click raised the goal.
-          if (!view.failure && !paused && view.goal > goal) run(view);
+          if (!view.failure && !scheduler.paused && view.goal > goal) run(view);
         }
         notify();
       });
@@ -280,9 +222,8 @@ export function createTopicFeed(
     const goal = 100 + 100 * Math.floor((page + 6) / 10);
     const higher = goal > view.goal;
     view.goal = Math.max(view.goal, goal);
-    if (retry && paused && now() < cooldown)
+    if (retry && !scheduler.retry())
       return Promise.resolve({ error: new Error("请求冷却中，请稍后重试") });
-    if (retry) paused = false;
     if (retry || higher) {
       if (view.pending && view.failure) view.restart = true;
       else if (!view.pending) reset(view);

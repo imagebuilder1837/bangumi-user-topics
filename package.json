@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "format": "prettier --write src/*.mjs scripts/*.mjs test/*.mjs",
-    "format:check": "prettier --check src/*.mjs scripts/*.mjs test/*.mjs src/index.user.js",
+    "format": "prettier --write src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs",
+    "format:check": "prettier --check src/*.mjs scripts/*.mjs test/*.mjs test/support/*.mjs src/index.user.js",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs"
   },

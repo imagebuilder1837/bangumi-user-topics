@@ -56,6 +56,8 @@ function open(
   });
   dom.window.scrollTo = () => {};
   const requests = [];
+  const warnings = [];
+  dom.window.console.warn = (...message) => warnings.push(message);
   start(dom.window, {
     fetch: async (url, init) => {
       requests.push({ url: new URL(url), init });
@@ -86,7 +88,13 @@ function open(
       };
     },
   });
-  return { dom, window: dom.window, document: dom.window.document, requests };
+  return {
+    dom,
+    window: dom.window,
+    document: dom.window.document,
+    requests,
+    warnings,
+  };
 }
 const tick = async () => {
   for (let i = 0; i < 6; i++)
@@ -264,7 +272,7 @@ test("async results do not discard keyboard focus on the category link", async (
   app.dom.window.close();
 });
 
-test("removing the host's original subnavigation ends takeover without resurrecting it", async () => {
+test("removing the host's original subnavigation does not suspend takeover or resurrect it", async () => {
   const app = open("/anime/list/sai/collect#posts/group", "state", {
     subnav: true,
   });
@@ -275,8 +283,11 @@ test("removing the host's original subnavigation ends takeover without resurrect
   );
   nativeSub.remove();
   await tick();
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  assert.equal(nativeSub.isConnected, false);
   assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
-  assert.equal(app.document.querySelector("[data-user-topics-subnav]"), null);
   assert.equal(app.document.querySelector(".columns"), columns);
   app.dom.window.close();
 });
@@ -300,7 +311,7 @@ test("a later extension subnavigation remains visible during takeover", async ()
   app.dom.window.close();
 });
 
-test("external changes to the original subnavigation marker end takeover without overwriting them", async () => {
+test("external changes to the original subnavigation marker do not suspend takeover and are preserved on exit", async () => {
   const app = open("/anime/list/sai/collect#posts/group", "state", {
     subnav: true,
   });
@@ -310,12 +321,14 @@ test("external changes to the original subnavigation marker end takeover without
   );
   native.dataset.userTopicsOriginalSubnav = "external";
   await tick();
-  assert.equal(app.document.querySelector("[data-user-topics-view]"), null);
+  assert.ok(app.document.querySelector("[data-user-topics-view]"));
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
   assert.equal(native.dataset.userTopicsOriginalSubnav, "external");
   app.dom.window.close();
 });
 
-test("the entry follows the matched path even where takeover cannot be verified", () => {
+test("a footer boundary mounts even without any columns or original content", async () => {
   const stripped = blog.replace(
     /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
     "",
@@ -327,7 +340,9 @@ test("the entry follows the matched path even where takeover cannot be verified"
       1,
       path,
     );
-    assert.equal(app.requests.length, 0, path);
+    assert.ok(app.document.querySelector("[data-user-topics-view]"), path);
+    await tick();
+    assert.ok(app.requests.length > 0, path);
     app.dom.window.close();
   }
 });
@@ -351,19 +366,35 @@ test("path and markup disagreement no longer blocks takeover", async () => {
   }
 });
 
-test("identity mismatch and out-of-scope paths never insert an entry", () => {
-  for (const [path, shape, source] of [
-    ["/user/other/friends#posts", "friends", undefined],
-    ["/user/sai/doujin#posts", "home", undefined],
-    ["/user/sai/whatever#posts", "home", undefined],
+test("identity conflicts report a reason, while out-of-scope pages remain silent", () => {
+  for (const [path, reason] of [
+    [
+      "/user/other/friends#posts",
+      "帖子入口插入失败：个人导航中的日志链接与页面目标用户身份冲突。",
+    ],
+    ["/user/sai/doujin", null],
+    ["/user/sai/doujin#posts", null],
+    ["/user/sai/whatever#posts", null],
   ]) {
-    const app = open(path, shape, { source });
+    const app = open(path, "home");
     assert.equal(
       app.document.querySelector("[data-user-topics-link]"),
       null,
       path,
     );
     assert.equal(app.requests.length, 0, path);
+    assert.equal(
+      app.document.querySelector("[data-user-topics-error]")?.textContent ??
+        null,
+      reason,
+      path,
+    );
+    assert.equal(app.warnings.length, reason ? 1 : 0, path);
+    assert.equal(
+      app.document.querySelector("[data-user-topics-active]"),
+      null,
+      path,
+    );
     app.dom.window.close();
   }
 });
@@ -493,19 +524,18 @@ test("an extension subnavigation before the native one does not block takeover",
 });
 
 test("an unverifiable page keeps the entry but surfaces a visible mount error on demand", async () => {
-  const source = blog.replace(
-    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
-    "",
-  );
+  const source = blog.replace('id="footer"', 'id="missing-footer"');
   const app = open("/user/sai#posts", "home", { source });
   const d = app.document;
   await tick();
-  assert.equal(d.querySelector(".columns"), null);
+  assert.ok(d.querySelector(".columns"));
   assert.equal(app.requests.length, 0);
   const panel = d.querySelector("[data-user-topics-error]");
-  assert.equal(panel?.textContent, "无法安全挂载帖子视图");
-  assert.equal(panel.style.textAlign, "center");
-  assert.equal(panel.style.margin, "6px auto 0px");
+  assert.equal(
+    panel?.textContent,
+    "帖子视图挂载失败：未找到正文中的 footer 挂载边界。",
+  );
+  assert.equal(panel.getAttribute("role"), "alert");
   assert.equal(d.querySelector("[data-user-topics-view]"), null);
   assert.equal(d.querySelector("[data-user-topics-subnav]"), null);
   d.querySelector("[data-user-topics-link] a").click();
@@ -519,19 +549,12 @@ test("an unverifiable page keeps the entry but surfaces a visible mount error on
 });
 
 test("repairing the structure lets the same-hash entry click mount the view", async () => {
-  const source = blog.replace(
-    /<div class="columns columns-center">[\s\S]*?(?=<div id="footer">)/,
-    "",
-  );
+  const source = blog.replace('id="footer"', 'id="missing-footer"');
   const app = open("/user/sai#posts", "home", { source });
   const d = app.document;
   await tick();
   assert.equal(!!d.querySelector("[data-user-topics-error]"), true);
-  const footer = d.querySelector("#footer");
-  const columns = d.createElement("div");
-  columns.className = "columns";
-  columns.innerHTML = '<div id="columnA" class="column"></div>';
-  footer.before(columns);
+  d.querySelector("#missing-footer").id = "footer";
   d.querySelector("[data-user-topics-link] a").click();
   await tick();
   assert.equal(d.querySelector("[data-user-topics-error]"), null);

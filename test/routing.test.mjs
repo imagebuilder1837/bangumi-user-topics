@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, enter, tick, hit, envelope, html } from "./app-support.mjs";
+import {
+  setup,
+  enter,
+  tick,
+  hit,
+  envelope,
+  html,
+} from "./support/posts-page.mjs";
 import { start } from "../src/entry.mjs";
 
 test("subject direct link and four exact category hashes use the subject endpoint", async () => {

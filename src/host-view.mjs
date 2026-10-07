@@ -3,50 +3,58 @@ const userPath =
 const collectionPath =
   /^\/(anime|book|music|game|real)\/list\/([^/]+)(?:\/(wish|collect|do|on_hold|dropped))?\/?$/;
 const css = `
-[data-user-topics-active="on"] > #headerProfile + .mainWrapper > :not(#footer):not(#footer ~ *):not([data-user-topics-view]),
-[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper[data-user-topics-original-subnav="on"] { display: none !important; }
-[data-user-topics-active="on"] { min-width: 0 !important; }
-[data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
-[data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
+[data-user-topics-main="on"] > :not([data-user-topics-footer="on"]):not([data-user-topics-footer="on"] ~ *):not([data-user-topics-view]),
+[data-user-topics-original-subnav="on"] { display: none !important; }
+[data-user-topics-active="on"], [data-user-topics-header="on"] { min-width: 0 !important; }
+[data-user-topics-main="on"] { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-view] { width: 100%; max-width: 750px; margin: 0 auto; padding-top: 10px; min-height: 200px; box-sizing: border-box; }
 [data-user-topics-view] > .flex-center-v { flex-wrap: wrap; justify-content: flex-start; column-gap: .6em; }
 [data-user-topics-view] > .flex-center-v > [role="status"] { color: #999; min-width: 0; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
 
-// Takeover-level verification: everything hiding and restoring the host
-// content depends on. Runs at activation time, not at entry insertion, so a
-// failed check can surface visibly instead of silently hiding the entry.
-// The takeover does not enumerate known page shapes: any page that offers a
-// .mainWrapper body with a #footer boundary can be taken over safely, and
-// everything before the footer is hidden and later restored as a whole.
+// null means this is not a recognizable, in-scope personal page. A failure
+// carries a live personal navigation anchor and the first blocking reason.
 export function verifyTakeover(window) {
-  const base = locateProfile(window);
-  if (!base) return null;
-  const main = base.profile.nextElementSibling;
-  // Sibling components may insert bars next to the columns; locate the
-  // columns semantically instead of assuming it is the first child.
-  const columns = main?.querySelector(":scope > .columns");
-  const footer = main?.querySelector(":scope > #footer");
-  // Components may add their own subnavigation wrappers; the first wrapper
-  // that actually carries a subnavigation list is captured for hiding, extra
-  // wrappers are tolerated and left visible.
+  const base = inspectEntry(window);
+  if (!base || base.failure) return base;
+  const scope = base.wrapper || base.profile.parentElement;
+  const mains = [...scope.querySelectorAll(".mainWrapper")].filter(
+    (main) =>
+      !main.contains(base.profile) &&
+      !base.profile.contains(main) &&
+      !!(
+        base.profile.compareDocumentPosition(main) &
+        window.Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+  );
+  const boundaries = mains.flatMap((main) =>
+    [...main.querySelectorAll(":scope > #footer")].map((footer) => ({
+      main,
+      footer,
+    })),
+  );
+  let reason;
+  if (!mains.length) reason = "未找到可挂载的正文容器。";
+  else if (!boundaries.length) reason = "未找到正文中的 footer 挂载边界。";
+  else if (boundaries.length !== 1)
+    reason = "正文存在多个 footer 挂载边界，无法确定挂载位置。";
+  if (reason)
+    return { failure: { nav: base.nav, navMount: base.navMount, reason } };
   const originalSub = [
-    ...base.profile.querySelectorAll(
-      ":scope > .subjectNav > .navSubTabsWrapper",
-    ),
-  ].find((wrapper) => wrapper.querySelector(":scope > .navSubTabs"));
-  if (
-    !main?.matches(".mainWrapper") ||
-    !columns ||
-    !footer ||
-    footer.parentElement !== main
-  )
-    return null;
-  return { ...base, columns, footer, originalSub: originalSub || null };
+    ...base.profile.querySelectorAll(".navSubTabsWrapper"),
+  ].find(
+    (node) =>
+      !node.hasAttribute("data-user-topics-error") &&
+      !node.hasAttribute("data-user-topics-subnav") &&
+      !node.contains(base.nav) &&
+      !base.nav.contains(node) &&
+      node.querySelector(":scope > .navSubTabs"),
+  );
+  return { ...base, ...boundaries[0], originalSub: originalSub || null };
 }
 
-function locateProfile(window) {
+export function inspectEntry(window) {
   const { document, location } = window;
   if (
     !["bgm.tv", "bangumi.tv", "chii.in"].includes(location.hostname) ||
@@ -56,58 +64,104 @@ function locateProfile(window) {
   const userMatch = userPath.exec(location.pathname);
   const collectionMatch = collectionPath.exec(location.pathname);
   if (!userMatch && !collectionMatch) return null;
+  const profile = document.querySelector("#headerProfile");
+  const nav = profile?.querySelector(".navTabs");
+  if (!nav) return null;
+  const navWrapper = nav.closest(".navTabsWrapper");
+  const navMount =
+    navWrapper && profile.contains(navWrapper) ? navWrapper : nav;
+  const fail = (reason) => ({ failure: { nav, navMount, reason } });
   const rawKey = userMatch?.[1] || collectionMatch[2];
   let user;
   try {
     user = decodeURIComponent(rawKey);
   } catch {
-    return null;
+    return fail("页面中的用户 key 无法解码。");
   }
-  if (!user || !/^[\p{L}\p{N}_-]+$/u.test(user)) return null;
-  const wrapper = document.querySelector("#wrapperNeue");
-  const profile = wrapper?.querySelector(":scope > #headerProfile");
-  const subjectNav = profile?.querySelector(":scope > .subjectNav");
-  const navWrapper = subjectNav?.querySelector(":scope > .navTabsWrapper");
-  const nav = navWrapper?.querySelector(":scope > .navTabs");
-  const blogs = [...(nav?.children || [])].filter((li) => {
-    if (li.dataset?.userTopicsLink !== undefined) return false;
-    if (li.tagName !== "LI" || !li.firstElementChild?.matches("a[href]"))
+  if (!user || !/^[\p{L}\p{N}_-]+$/u.test(user))
+    return fail("页面中的用户 key 不适用于用户查询。");
+  const blogs = [...nav.querySelectorAll(":scope > li > a[href]")].filter(
+    (anchor) => {
+      if (anchor.parentElement.hasAttribute("data-user-topics-link"))
+        return false;
+      try {
+        const url = new URL(anchor.href);
+        return (
+          url.origin === location.origin &&
+          /^\/user\/[^/]+\/blog\/?$/.test(url.pathname)
+        );
+      } catch {
+        return false;
+      }
+    },
+  );
+  if (!blogs.length) return fail("个人导航中未找到目标用户的日志链接。");
+  try {
+    if (
+      blogs.some(
+        (anchor) =>
+          decodeURIComponent(new URL(anchor.href).pathname.split("/")[2]) !==
+          user,
+      )
+    )
+      return fail("个人导航中的日志链接与页面目标用户身份冲突。");
+  } catch {
+    return fail("个人导航中的日志链接用户 key 无法解码。");
+  }
+  const blog = blogs[0];
+  const name = profile.querySelector("h1 .name");
+  const nicknameLink = [
+    ...(name?.querySelectorAll(":scope > a[href]") || []),
+  ].find((anchor) => {
+    try {
+      const url = new URL(anchor.href);
+      const match = /^\/user\/([^/]+)\/?$/.exec(url.pathname);
+      return (
+        url.origin === location.origin &&
+        match &&
+        decodeURIComponent(match[1]) === user
+      );
+    } catch {
       return false;
-    const url = new URL(li.firstElementChild.href);
-    return (
-      url.origin === location.origin &&
-      /^\/user\/[^/]+\/blog\/?$/.test(url.pathname)
-    );
+    }
   });
-  if (blogs.length !== 1) return null;
-  const blog = blogs[0].firstElementChild;
-  if (new URL(blog.href).pathname.split("/")[2] !== rawKey) return null;
-  const header = profile?.querySelector("h1 .name > a");
-  if (
-    !wrapper ||
-    !wrapper.contains(document.querySelector("#headerNeue2")) ||
-    !subjectNav ||
-    !navWrapper ||
-    !nav ||
-    !header
-  )
-    return null;
+  const nickname =
+    nicknameLink?.textContent.trim() ||
+    [...(name?.childNodes || [])]
+      .filter((node) => node.nodeType === window.Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join("")
+      .trim() ||
+    user;
   return {
-    wrapper,
+    wrapper: profile.closest("#wrapperNeue"),
     profile,
-    subjectNav,
-    navWrapper,
     nav,
+    navMount,
     blog,
     user,
-    nickname: header.textContent.trim(),
+    nickname,
   };
 }
 
-// Entry-level inspection: only what inserting the navigation entry needs.
-// Entry appearance is path-scoped and does not depend on takeover checks.
-export function inspectEntry(window) {
-  return locateProfile(window);
+// Observers below only relinquish restoration ownership after external writes.
+// They never inspect host structure, exit the view or trigger a new takeover.
+function ownAttribute(window, node, name) {
+  if (!node) return () => {};
+  const previous = node.getAttribute(name);
+  node.setAttribute(name, "on");
+  let owned = true;
+  const observer = new window.MutationObserver(() => {
+    owned = false;
+  });
+  observer.observe(node, { attributes: true, attributeFilter: [name] });
+  return () => {
+    if (observer.takeRecords().length) owned = false;
+    observer.disconnect();
+    if (!owned || node.getAttribute(name) !== "on") return;
+    if (previous === null) node.removeAttribute(name);
+    else node.setAttribute(name, previous);
+  };
 }
 
 export function createHostView(window, host) {
@@ -120,24 +174,22 @@ export function createHostView(window, host) {
     focus = null,
     previousScroll = null,
     previousFocus = null,
-    previousMarker = null,
-    markerOwned = false,
-    focusOwned = false,
-    subnavMarkerOwned = false,
-    previousSubnavMarker = null;
-  const markerObserver = new window.MutationObserver(() => {
-    markerOwned = false;
-  });
+    hiddenContent = [],
+    releases = [],
+    focusOwned = false;
   const focusObserver = new window.MutationObserver(() => {
     focusOwned = false;
   });
-  const subnavObserver = new window.MutationObserver(() => {
-    subnavMarkerOwned = false;
-  });
   function show() {
-    if (root) return { root, subnav };
+    if (root) return;
     previousScroll = window.scrollY;
-    previousFocus = host.columns.contains(document.activeElement)
+    hiddenContent = [...host.main.children].slice(
+      0,
+      [...host.main.children].indexOf(host.footer),
+    );
+    previousFocus = hiddenContent.some((node) =>
+      node.contains(document.activeElement),
+    )
       ? document.activeElement
       : null;
     focus = host.nav.querySelector(":scope > li > a.focus");
@@ -149,33 +201,29 @@ export function createHostView(window, host) {
         attributeFilter: ["class"],
       });
     }
-    previousMarker = host.wrapper.getAttribute("data-user-topics-active");
-    host.wrapper.dataset.userTopicsActive = "on";
-    markerOwned = true;
-    markerObserver.observe(host.wrapper, {
-      attributes: true,
-      attributeFilter: ["data-user-topics-active"],
-    });
-    if (host.originalSub) {
-      previousSubnavMarker = host.originalSub.getAttribute(
+    releases = [
+      ownAttribute(window, host.wrapper, "data-user-topics-active"),
+      ownAttribute(
+        window,
+        host.wrapper?.querySelector("#headerNeue2"),
+        "data-user-topics-header",
+      ),
+      ownAttribute(window, host.main, "data-user-topics-main"),
+      ownAttribute(window, host.footer, "data-user-topics-footer"),
+      ownAttribute(
+        window,
+        host.originalSub,
         "data-user-topics-original-subnav",
-      );
-      host.originalSub.dataset.userTopicsOriginalSubnav = "on";
-      subnavMarkerOwned = true;
-      subnavObserver.observe(host.originalSub, {
-        attributes: true,
-        attributeFilter: ["data-user-topics-original-subnav"],
-      });
-    }
+      ),
+    ];
     document.head.append(style);
     subnav = document.createElement("div");
     subnav.className = "navSubTabsWrapper";
     subnav.dataset.userTopicsSubnav = "";
-    (host.originalSub || host.nav.parentElement).after(subnav);
+    (host.originalSub || host.navMount).after(subnav);
     root = document.createElement("section");
     root.dataset.userTopicsView = "";
     host.footer.before(root);
-    return { root, subnav };
   }
   function hide() {
     if (!root) return;
@@ -188,26 +236,11 @@ export function createHostView(window, host) {
     root.remove();
     subnav.remove();
     root = subnav = null;
-    if (markerObserver.takeRecords().length) markerOwned = false;
-    markerObserver.disconnect();
     if (focusObserver.takeRecords().length) focusOwned = false;
     focusObserver.disconnect();
-    if (subnavObserver.takeRecords().length) subnavMarkerOwned = false;
-    subnavObserver.disconnect();
     style.remove();
-    if (
-      subnavMarkerOwned &&
-      host.originalSub?.dataset.userTopicsOriginalSubnav === "on"
-    ) {
-      if (previousSubnavMarker === null)
-        delete host.originalSub.dataset.userTopicsOriginalSubnav;
-      else
-        host.originalSub.setAttribute(
-          "data-user-topics-original-subnav",
-          previousSubnavMarker,
-        );
-    }
-    subnavMarkerOwned = false;
+    for (const release of releases) release();
+    releases = [];
     if (
       focusOwned &&
       focus?.isConnected &&
@@ -215,18 +248,15 @@ export function createHostView(window, host) {
     )
       focus.classList.add("focus");
     focusOwned = false;
-    if (markerOwned && host.wrapper.dataset.userTopicsActive === "on") {
-      if (previousMarker === null) delete host.wrapper.dataset.userTopicsActive;
-      else host.wrapper.setAttribute("data-user-topics-active", previousMarker);
-    }
-    markerOwned = false;
     if (
       releaseFocus &&
       previousFocus?.isConnected &&
-      host.columns.contains(previousFocus)
+      host.main.contains(previousFocus) &&
+      hiddenContent.some((node) => node.contains(previousFocus))
     )
       previousFocus.focus();
     previousFocus = null;
+    hiddenContent = [];
     const hash = window.location.hash.slice(1);
     const nativeAnchor = hash && document.getElementById(hash);
     if (
@@ -241,16 +271,14 @@ export function createHostView(window, host) {
       }
     }
   }
-  function intact() {
-    if (!root || root.parentElement !== host.footer.parentElement) return false;
-    // Nodes inserted between the root and the footer stay hidden by the
-    // takeover CSS, so only the relative order matters, not adjacency.
-    return (
-      !!(
-        root.compareDocumentPosition(host.footer) &
-        window.Node.DOCUMENT_POSITION_FOLLOWING
-      ) && subnav?.parentElement === host.nav.parentElement.parentElement
-    );
-  }
-  return { show, hide, intact };
+  return {
+    show,
+    hide,
+    get root() {
+      return root;
+    },
+    get subnav() {
+      return subnav;
+    },
+  };
 }

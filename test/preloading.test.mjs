@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, tick, hit, envelope } from "./app-support.mjs";
+import { setup, tick, hit, envelope } from "./support/posts-page.mjs";
 
 const numbers = (app) =>
   [...app.document.querySelectorAll("[data-page], [data-page-link]")].map(

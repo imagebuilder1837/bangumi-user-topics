@@ -1,6 +1,7 @@
 import { inspectEntry, verifyTakeover, createHostView } from "./host-view.mjs";
 import { createSearchEncore } from "./search-encore.mjs";
 import { createTopicFeed } from "./topic-feed.mjs";
+import { createRequestScheduler } from "./request-scheduler.mjs";
 import { postsTitle, renderPosts, renderPostsNav } from "./posts-view.mjs";
 
 const categories = {
@@ -15,14 +16,15 @@ export function start(
   window,
   { fetch = window.fetch.bind(window), timers } = {},
 ) {
+  const { document } = window;
   const entryHost = inspectEntry(window);
-  if (!entryHost) {
-    if (categories[window.location.hash])
-      console.warn("用户帖子：当前页面无法安全挂载");
+  if (!entryHost) return;
+  if (entryHost.failure) {
+    showErrorPanel(entryHost.failure, "帖子入口插入");
     return;
   }
-  const { document } = window;
   if (entryHost.nav.querySelector("[data-user-topics-link]")) return;
+  removeErrorPanel();
   const entry = document.createElement("li");
   entry.dataset.userTopicsLink = "";
   const anchor = document.createElement("a");
@@ -31,12 +33,13 @@ export function start(
   entry.append(anchor);
   entryHost.blog.parentElement.after(entry);
 
-  // Entry insertion is path-scoped. The takeover nodes, view, feed and
-  // runtime guards only come together at the first verified activation, so a
-  // page that cannot be verified surfaces a visible error instead of the
-  // entry silently never working.
+  // Entry insertion and entering the posts view are the only host checks.
+  // Once active, DOM changes never suspend or automatically retake the page.
+  const scheduler = createRequestScheduler({
+    now: timers?.now,
+    delay: timers?.setTimeout,
+  });
   let session = null;
-  let explicitNavigation = false;
   anchor.addEventListener("click", (event) => {
     if (
       event.button === 0 &&
@@ -45,20 +48,17 @@ export function start(
       !event.shiftKey &&
       !event.altKey
     ) {
-      explicitNavigation = window.location.hash !== "#posts";
-      if (!explicitNavigation && !visible) route(true);
+      if (window.location.hash === "#posts" && !visible) route();
     }
   });
   let visible = false,
-    suspended = false,
     category = null,
-    takeoverEpoch = 0,
     previousTitle = null,
     ownedTitle = null;
   function updateTitle(next) {
     if (previousTitle === null) previousTitle = document.title;
     if (ownedTitle === null || document.title === ownedTitle) {
-      ownedTitle = postsTitle(entryHost.nickname, next);
+      ownedTitle = postsTitle(session.host.nickname, next);
       document.title = ownedTitle;
     }
   }
@@ -72,8 +72,7 @@ export function start(
     const feed = createTopicFeed(createSearchEncore(fetch, timers), {
       user: host.user,
       origin: window.location.origin,
-      now: timers?.now,
-      delay: timers?.setTimeout,
+      scheduler,
       onChange: refresh,
     });
     const states = Object.fromEntries(
@@ -90,121 +89,31 @@ export function start(
         },
       ]),
     );
-    return { host, view, feed, states, observer: watchHost(host) };
+    return { host, view, feed, states };
   }
-  // Re-verification refreshes every takeover node reference; the runtime
-  // guards and the view read them dynamically, the observer must be rebuilt.
-  function rebindSession(verified) {
-    session.observer.disconnect();
-    Object.assign(session.host, verified);
-    session.observer = watchHost(session.host);
-  }
-  function watchHost(host) {
-    const main = host.columns.parentElement;
-    const navWrapper = host.nav.parentElement;
-    const subjectNav = host.subjectNav;
-    const observer = new window.MutationObserver(() => {
-      if (visible && !activeHostValid()) route();
-    });
-    observer.observe(main, {
-      childList: true,
-      attributes: true,
-      attributeFilter: ["class", "style"],
-    });
-    observer.observe(navWrapper, {
-      childList: true,
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    observer.observe(host.profile, {
-      childList: true,
-      attributes: true,
-      attributeFilter: ["id"],
-    });
-    observer.observe(subjectNav, {
-      childList: true,
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    observer.observe(host.nav, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    observer.observe(host.footer, {
-      attributes: true,
-      attributeFilter: ["id"],
-    });
-    observer.observe(host.columns, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "style"],
-    });
-    observer.observe(host.wrapper, {
-      childList: true,
-      attributes: true,
-      attributeFilter: ["data-user-topics-active", "id"],
-    });
-    if (host.originalSub)
-      observer.observe(host.originalSub, {
-        attributes: true,
-        attributeFilter: ["data-user-topics-original-subnav", "class", "style"],
-      });
-    return observer;
-  }
-  function showErrorPanel() {
-    if (document.querySelector("[data-user-topics-error]")) return;
-    const panel = document.createElement("section");
+  function showErrorPanel(failure, stage = "帖子视图挂载") {
+    const panel =
+      document.querySelector("[data-user-topics-error]") ||
+      document.createElement("section");
     panel.dataset.userTopicsError = "";
-    panel.textContent = "无法安全挂载帖子视图";
-    panel.style.cssText =
-      "max-width: 750px; margin: 6px auto 0; text-align: center;";
-    entryHost.subjectNav.after(panel);
-    console.warn("用户帖子：接管校验未通过，帖子视图未挂载");
+    panel.className = "navSubTabsWrapper";
+    panel.setAttribute("role", "alert");
+    const list = document.createElement("ul");
+    list.className = "navSubTabs";
+    const message = document.createElement("li");
+    message.textContent = `${stage}失败：${failure.reason}`;
+    list.append(message);
+    panel.replaceChildren(list);
+    failure.navMount.after(panel);
+    window.console.warn(`用户帖子：${message.textContent}`, failure);
   }
   function removeErrorPanel() {
     document.querySelector("[data-user-topics-error]")?.remove();
   }
-  const mounted = () => {
-    if (!session) return false;
-    const host = session.host;
-    const main = host.columns.parentElement;
-    const navWrapper = host.nav.parentElement;
-    const subjectNav = host.subjectNav;
-    return (
-      host.wrapper.matches("#wrapperNeue") &&
-      host.profile.matches("#headerProfile") &&
-      host.profile.parentElement === host.wrapper &&
-      main.matches(".mainWrapper") &&
-      host.profile.nextElementSibling === main &&
-      host.columns.parentElement === main &&
-      host.footer.matches("#footer") &&
-      host.footer.parentElement === main &&
-      (!host.originalSub ||
-        (host.originalSub.isConnected &&
-          host.originalSub.parentElement === subjectNav)) &&
-      subjectNav.matches(".subjectNav") &&
-      subjectNav.parentElement === host.profile &&
-      navWrapper.matches(".navTabsWrapper") &&
-      navWrapper.parentElement === subjectNav &&
-      host.nav.matches(".navTabs") &&
-      host.nav.parentElement === navWrapper
-    );
-  };
-  const activeHostValid = () =>
-    mounted() &&
-    session.host.wrapper.dataset.userTopicsActive === "on" &&
-    session.view.intact() &&
-    (!session.host.originalSub ||
-      session.host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
-    window.getComputedStyle(session.host.columns).display === "none" &&
-    (!session.host.originalSub ||
-      window.getComputedStyle(session.host.originalSub).display === "none");
   function paint(preserveFocus = false) {
     if (!visible || !session) return;
-    const root = document.querySelector("[data-user-topics-view]");
+    const { root, subnav } = session.view;
     const state = session.states[category];
-    const subnav = document.querySelector("[data-user-topics-subnav]");
     if (subnav) renderPostsNav(subnav, category);
     if (root)
       renderPosts(root, {
@@ -228,10 +137,6 @@ export function start(
   }
   function refresh(filter) {
     if (!session || !visible || category !== filter) return;
-    if (!activeHostValid()) {
-      route();
-      return;
-    }
     const state = session.states[filter];
     if (state.pending || state.ready || !state.current.items?.length) return;
     const result = session.feed.snapshot(filter, state.page);
@@ -249,10 +154,6 @@ export function start(
     if (!session) return;
     const state = session.states[filter];
     if (!state.ready || !visible || category !== filter) return;
-    if (!activeHostValid()) {
-      route();
-      return;
-    }
     const { target } = state.ready;
     const result = state.ready.result.error
       ? state.ready.result
@@ -287,10 +188,6 @@ export function start(
   }
   async function load(filter, target, retry = false, continuing = false) {
     if (!visible || !session || category !== filter) return;
-    if (!activeHostValid()) {
-      route();
-      return;
-    }
     const state = session.states[filter];
     if (state.pending) return;
     state.started = true;
@@ -298,7 +195,7 @@ export function start(
     state.ready = null;
     const scroll = !retry && target !== state.page;
     if (scroll) window.scrollTo(0, 0);
-    const epoch = takeoverEpoch;
+    const loadingSession = session;
     state.current = {
       ...state.current,
       loading: true,
@@ -315,59 +212,38 @@ export function start(
     } catch (error) {
       result = { error };
     }
-    if (state.pending !== job || epoch !== takeoverEpoch) return;
+    if (session !== loadingSession || state.pending !== job) return;
     state.pending = null;
     state.ready = { target, result };
     publish(filter);
   }
-  // An explicit click on the entry can reenter after a suspended host recovers.
-  function route(explicit = false) {
+  function route() {
     const next = categories[window.location.hash];
-    const invalid = visible && (!mounted() || !activeHostValid());
-    if (!next || invalid) {
-      explicitNavigation = false;
+    if (!next) {
+      removeErrorPanel();
       if (visible) {
         visible = false;
-        suspended = Boolean(next && invalid);
-        if (suspended) takeoverEpoch++;
         category = null;
         session.feed.setForeground(null);
-        if (suspended)
-          for (const state of Object.values(session.states)) {
-            if (state.ready || state.pending || state.current.loading)
-              state.started = false;
-            state.ready = null;
-            state.pending = null;
-            state.current = { ...state.current, loading: false };
-          }
         anchor.classList.remove("focus");
         session.view.hide();
         restoreTitle();
-      } else if (!next) {
-        suspended = false;
-        removeErrorPanel();
       }
       return;
     }
-    if (suspended && !explicit && !explicitNavigation) return;
     if (!visible) {
-      // Takeover still needs a full safety check at activation time; a failed
-      // check shows the mount error panel and leaves the host untouched.
       const verified = verifyTakeover(window);
-      if (!verified) {
-        suspended = false;
-        showErrorPanel();
+      if (!verified || verified.failure) {
+        if (verified?.failure) showErrorPanel(verified.failure);
+        else removeErrorPanel();
         return;
       }
       removeErrorPanel();
-      suspended = false;
-      if (!session) session = establishSession(verified);
-      else rebindSession(verified);
-    } else suspended = false;
-    if (visible && category === next) {
-      explicitNavigation = false;
-      return;
+      if (!session || session.host.user !== verified.user)
+        session = establishSession(verified);
+      else Object.assign(session.host, verified);
     }
+    if (visible && category === next) return;
     visible = true;
     category = next;
     updateTitle(next);
@@ -375,7 +251,6 @@ export function start(
     session.view.show();
     anchor.classList.add("focus");
     paint();
-    explicitNavigation = false;
     const state = session.states[next];
     if (state.ready) publish(next);
     else if (!state.started) load(next, state.page);

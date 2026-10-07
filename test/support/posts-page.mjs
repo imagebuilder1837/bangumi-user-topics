@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { start } from "../src/entry.mjs";
+import { start } from "../../src/entry.mjs";
 
 export const html = readFileSync(
-  new URL("./fixtures/blog.html", import.meta.url),
+  new URL("../fixtures/blog.html", import.meta.url),
   "utf8",
 );
 export const tick = async () => {
@@ -31,6 +31,7 @@ export function setup({
   respond = (offset, limit) => envelope([], offset, limit),
   markup = html,
   fetchOverride,
+  beforeStart = () => {},
   // Most fixtures need completed retry cycles, not real seconds of wall time.
   // Timing-specific tests inject a manual clock instead.
   timers = {
@@ -52,6 +53,7 @@ export function setup({
     );
     return { ok: true, json: async () => result };
   };
+  beforeStart(dom.window);
   start(dom.window, { fetch: fetchOverride || fetch, timers });
   return {
     window: dom.window,

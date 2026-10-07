@@ -38,50 +38,58 @@
   const collectionPath =
     /^\/(anime|book|music|game|real)\/list\/([^/]+)(?:\/(wish|collect|do|on_hold|dropped))?\/?$/;
   const css = `
-[data-user-topics-active="on"] > #headerProfile + .mainWrapper > :not(#footer):not(#footer ~ *):not([data-user-topics-view]),
-[data-user-topics-active="on"] > #headerProfile > .subjectNav > .navSubTabsWrapper[data-user-topics-original-subnav="on"] { display: none !important; }
-[data-user-topics-active="on"] { min-width: 0 !important; }
-[data-user-topics-active="on"] > #headerProfile + .mainWrapper { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
-[data-user-topics-active="on"] > #headerNeue2 { min-width: 0 !important; }
+[data-user-topics-main="on"] > :not([data-user-topics-footer="on"]):not([data-user-topics-footer="on"] ~ *):not([data-user-topics-view]),
+[data-user-topics-original-subnav="on"] { display: none !important; }
+[data-user-topics-active="on"], [data-user-topics-header="on"] { min-width: 0 !important; }
+[data-user-topics-main="on"] { width: 100% !important; max-width: 1200px !important; min-width: 0 !important; margin: 0 auto !important; padding: 0 12px !important; box-sizing: border-box !important; }
 [data-user-topics-view] { width: 100%; max-width: 750px; margin: 0 auto; padding-top: 10px; min-height: 200px; box-sizing: border-box; }
 [data-user-topics-view] > .flex-center-v { flex-wrap: wrap; justify-content: flex-start; column-gap: .6em; }
 [data-user-topics-view] > .flex-center-v > [role="status"] { color: #999; min-width: 0; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
 [data-user-topics-view] .entry-list .item { display: flex; }
 `;
 
-  // Takeover-level verification: everything hiding and restoring the host
-  // content depends on. Runs at activation time, not at entry insertion, so a
-  // failed check can surface visibly instead of silently hiding the entry.
-  // The takeover does not enumerate known page shapes: any page that offers a
-  // .mainWrapper body with a #footer boundary can be taken over safely, and
-  // everything before the footer is hidden and later restored as a whole.
+  // null means this is not a recognizable, in-scope personal page. A failure
+  // carries a live personal navigation anchor and the first blocking reason.
   function verifyTakeover(window) {
-    const base = locateProfile(window);
-    if (!base) return null;
-    const main = base.profile.nextElementSibling;
-    // Sibling components may insert bars next to the columns; locate the
-    // columns semantically instead of assuming it is the first child.
-    const columns = main?.querySelector(":scope > .columns");
-    const footer = main?.querySelector(":scope > #footer");
-    // Components may add their own subnavigation wrappers; the first wrapper
-    // that actually carries a subnavigation list is captured for hiding, extra
-    // wrappers are tolerated and left visible.
+    const base = inspectEntry(window);
+    if (!base || base.failure) return base;
+    const scope = base.wrapper || base.profile.parentElement;
+    const mains = [...scope.querySelectorAll(".mainWrapper")].filter(
+      (main) =>
+        !main.contains(base.profile) &&
+        !base.profile.contains(main) &&
+        !!(
+          base.profile.compareDocumentPosition(main) &
+          window.Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+    );
+    const boundaries = mains.flatMap((main) =>
+      [...main.querySelectorAll(":scope > #footer")].map((footer) => ({
+        main,
+        footer,
+      })),
+    );
+    let reason;
+    if (!mains.length) reason = "未找到可挂载的正文容器。";
+    else if (!boundaries.length) reason = "未找到正文中的 footer 挂载边界。";
+    else if (boundaries.length !== 1)
+      reason = "正文存在多个 footer 挂载边界，无法确定挂载位置。";
+    if (reason)
+      return { failure: { nav: base.nav, navMount: base.navMount, reason } };
     const originalSub = [
-      ...base.profile.querySelectorAll(
-        ":scope > .subjectNav > .navSubTabsWrapper",
-      ),
-    ].find((wrapper) => wrapper.querySelector(":scope > .navSubTabs"));
-    if (
-      !main?.matches(".mainWrapper") ||
-      !columns ||
-      !footer ||
-      footer.parentElement !== main
-    )
-      return null;
-    return { ...base, columns, footer, originalSub: originalSub || null };
+      ...base.profile.querySelectorAll(".navSubTabsWrapper"),
+    ].find(
+      (node) =>
+        !node.hasAttribute("data-user-topics-error") &&
+        !node.hasAttribute("data-user-topics-subnav") &&
+        !node.contains(base.nav) &&
+        !base.nav.contains(node) &&
+        node.querySelector(":scope > .navSubTabs"),
+    );
+    return { ...base, ...boundaries[0], originalSub: originalSub || null };
   }
 
-  function locateProfile(window) {
+  function inspectEntry(window) {
     const { document, location } = window;
     if (
       !["bgm.tv", "bangumi.tv", "chii.in"].includes(location.hostname) ||
@@ -91,58 +99,104 @@
     const userMatch = userPath.exec(location.pathname);
     const collectionMatch = collectionPath.exec(location.pathname);
     if (!userMatch && !collectionMatch) return null;
+    const profile = document.querySelector("#headerProfile");
+    const nav = profile?.querySelector(".navTabs");
+    if (!nav) return null;
+    const navWrapper = nav.closest(".navTabsWrapper");
+    const navMount =
+      navWrapper && profile.contains(navWrapper) ? navWrapper : nav;
+    const fail = (reason) => ({ failure: { nav, navMount, reason } });
     const rawKey = userMatch?.[1] || collectionMatch[2];
     let user;
     try {
       user = decodeURIComponent(rawKey);
     } catch {
-      return null;
+      return fail("页面中的用户 key 无法解码。");
     }
-    if (!user || !/^[\p{L}\p{N}_-]+$/u.test(user)) return null;
-    const wrapper = document.querySelector("#wrapperNeue");
-    const profile = wrapper?.querySelector(":scope > #headerProfile");
-    const subjectNav = profile?.querySelector(":scope > .subjectNav");
-    const navWrapper = subjectNav?.querySelector(":scope > .navTabsWrapper");
-    const nav = navWrapper?.querySelector(":scope > .navTabs");
-    const blogs = [...(nav?.children || [])].filter((li) => {
-      if (li.dataset?.userTopicsLink !== undefined) return false;
-      if (li.tagName !== "LI" || !li.firstElementChild?.matches("a[href]"))
+    if (!user || !/^[\p{L}\p{N}_-]+$/u.test(user))
+      return fail("页面中的用户 key 不适用于用户查询。");
+    const blogs = [...nav.querySelectorAll(":scope > li > a[href]")].filter(
+      (anchor) => {
+        if (anchor.parentElement.hasAttribute("data-user-topics-link"))
+          return false;
+        try {
+          const url = new URL(anchor.href);
+          return (
+            url.origin === location.origin &&
+            /^\/user\/[^/]+\/blog\/?$/.test(url.pathname)
+          );
+        } catch {
+          return false;
+        }
+      },
+    );
+    if (!blogs.length) return fail("个人导航中未找到目标用户的日志链接。");
+    try {
+      if (
+        blogs.some(
+          (anchor) =>
+            decodeURIComponent(new URL(anchor.href).pathname.split("/")[2]) !==
+            user,
+        )
+      )
+        return fail("个人导航中的日志链接与页面目标用户身份冲突。");
+    } catch {
+      return fail("个人导航中的日志链接用户 key 无法解码。");
+    }
+    const blog = blogs[0];
+    const name = profile.querySelector("h1 .name");
+    const nicknameLink = [
+      ...(name?.querySelectorAll(":scope > a[href]") || []),
+    ].find((anchor) => {
+      try {
+        const url = new URL(anchor.href);
+        const match = /^\/user\/([^/]+)\/?$/.exec(url.pathname);
+        return (
+          url.origin === location.origin &&
+          match &&
+          decodeURIComponent(match[1]) === user
+        );
+      } catch {
         return false;
-      const url = new URL(li.firstElementChild.href);
-      return (
-        url.origin === location.origin &&
-        /^\/user\/[^/]+\/blog\/?$/.test(url.pathname)
-      );
+      }
     });
-    if (blogs.length !== 1) return null;
-    const blog = blogs[0].firstElementChild;
-    if (new URL(blog.href).pathname.split("/")[2] !== rawKey) return null;
-    const header = profile?.querySelector("h1 .name > a");
-    if (
-      !wrapper ||
-      !wrapper.contains(document.querySelector("#headerNeue2")) ||
-      !subjectNav ||
-      !navWrapper ||
-      !nav ||
-      !header
-    )
-      return null;
+    const nickname =
+      nicknameLink?.textContent.trim() ||
+      [...(name?.childNodes || [])]
+        .filter((node) => node.nodeType === window.Node.TEXT_NODE)
+        .map((node) => node.textContent)
+        .join("")
+        .trim() ||
+      user;
     return {
-      wrapper,
+      wrapper: profile.closest("#wrapperNeue"),
       profile,
-      subjectNav,
-      navWrapper,
       nav,
+      navMount,
       blog,
       user,
-      nickname: header.textContent.trim(),
+      nickname,
     };
   }
 
-  // Entry-level inspection: only what inserting the navigation entry needs.
-  // Entry appearance is path-scoped and does not depend on takeover checks.
-  function inspectEntry(window) {
-    return locateProfile(window);
+  // Observers below only relinquish restoration ownership after external writes.
+  // They never inspect host structure, exit the view or trigger a new takeover.
+  function ownAttribute(window, node, name) {
+    if (!node) return () => {};
+    const previous = node.getAttribute(name);
+    node.setAttribute(name, "on");
+    let owned = true;
+    const observer = new window.MutationObserver(() => {
+      owned = false;
+    });
+    observer.observe(node, { attributes: true, attributeFilter: [name] });
+    return () => {
+      if (observer.takeRecords().length) owned = false;
+      observer.disconnect();
+      if (!owned || node.getAttribute(name) !== "on") return;
+      if (previous === null) node.removeAttribute(name);
+      else node.setAttribute(name, previous);
+    };
   }
 
   function createHostView(window, host) {
@@ -155,24 +209,22 @@
       focus = null,
       previousScroll = null,
       previousFocus = null,
-      previousMarker = null,
-      markerOwned = false,
-      focusOwned = false,
-      subnavMarkerOwned = false,
-      previousSubnavMarker = null;
-    const markerObserver = new window.MutationObserver(() => {
-      markerOwned = false;
-    });
+      hiddenContent = [],
+      releases = [],
+      focusOwned = false;
     const focusObserver = new window.MutationObserver(() => {
       focusOwned = false;
     });
-    const subnavObserver = new window.MutationObserver(() => {
-      subnavMarkerOwned = false;
-    });
     function show() {
-      if (root) return { root, subnav };
+      if (root) return;
       previousScroll = window.scrollY;
-      previousFocus = host.columns.contains(document.activeElement)
+      hiddenContent = [...host.main.children].slice(
+        0,
+        [...host.main.children].indexOf(host.footer),
+      );
+      previousFocus = hiddenContent.some((node) =>
+        node.contains(document.activeElement),
+      )
         ? document.activeElement
         : null;
       focus = host.nav.querySelector(":scope > li > a.focus");
@@ -184,33 +236,29 @@
           attributeFilter: ["class"],
         });
       }
-      previousMarker = host.wrapper.getAttribute("data-user-topics-active");
-      host.wrapper.dataset.userTopicsActive = "on";
-      markerOwned = true;
-      markerObserver.observe(host.wrapper, {
-        attributes: true,
-        attributeFilter: ["data-user-topics-active"],
-      });
-      if (host.originalSub) {
-        previousSubnavMarker = host.originalSub.getAttribute(
+      releases = [
+        ownAttribute(window, host.wrapper, "data-user-topics-active"),
+        ownAttribute(
+          window,
+          host.wrapper?.querySelector("#headerNeue2"),
+          "data-user-topics-header",
+        ),
+        ownAttribute(window, host.main, "data-user-topics-main"),
+        ownAttribute(window, host.footer, "data-user-topics-footer"),
+        ownAttribute(
+          window,
+          host.originalSub,
           "data-user-topics-original-subnav",
-        );
-        host.originalSub.dataset.userTopicsOriginalSubnav = "on";
-        subnavMarkerOwned = true;
-        subnavObserver.observe(host.originalSub, {
-          attributes: true,
-          attributeFilter: ["data-user-topics-original-subnav"],
-        });
-      }
+        ),
+      ];
       document.head.append(style);
       subnav = document.createElement("div");
       subnav.className = "navSubTabsWrapper";
       subnav.dataset.userTopicsSubnav = "";
-      (host.originalSub || host.nav.parentElement).after(subnav);
+      (host.originalSub || host.navMount).after(subnav);
       root = document.createElement("section");
       root.dataset.userTopicsView = "";
       host.footer.before(root);
-      return { root, subnav };
     }
     function hide() {
       if (!root) return;
@@ -223,26 +271,11 @@
       root.remove();
       subnav.remove();
       root = subnav = null;
-      if (markerObserver.takeRecords().length) markerOwned = false;
-      markerObserver.disconnect();
       if (focusObserver.takeRecords().length) focusOwned = false;
       focusObserver.disconnect();
-      if (subnavObserver.takeRecords().length) subnavMarkerOwned = false;
-      subnavObserver.disconnect();
       style.remove();
-      if (
-        subnavMarkerOwned &&
-        host.originalSub?.dataset.userTopicsOriginalSubnav === "on"
-      ) {
-        if (previousSubnavMarker === null)
-          delete host.originalSub.dataset.userTopicsOriginalSubnav;
-        else
-          host.originalSub.setAttribute(
-            "data-user-topics-original-subnav",
-            previousSubnavMarker,
-          );
-      }
-      subnavMarkerOwned = false;
+      for (const release of releases) release();
+      releases = [];
       if (
         focusOwned &&
         focus?.isConnected &&
@@ -250,20 +283,15 @@
       )
         focus.classList.add("focus");
       focusOwned = false;
-      if (markerOwned && host.wrapper.dataset.userTopicsActive === "on") {
-        if (previousMarker === null)
-          delete host.wrapper.dataset.userTopicsActive;
-        else
-          host.wrapper.setAttribute("data-user-topics-active", previousMarker);
-      }
-      markerOwned = false;
       if (
         releaseFocus &&
         previousFocus?.isConnected &&
-        host.columns.contains(previousFocus)
+        host.main.contains(previousFocus) &&
+        hiddenContent.some((node) => node.contains(previousFocus))
       )
         previousFocus.focus();
       previousFocus = null;
+      hiddenContent = [];
       const hash = window.location.hash.slice(1);
       const nativeAnchor = hash && document.getElementById(hash);
       if (
@@ -278,19 +306,16 @@
         }
       }
     }
-    function intact() {
-      if (!root || root.parentElement !== host.footer.parentElement)
-        return false;
-      // Nodes inserted between the root and the footer stay hidden by the
-      // takeover CSS, so only the relative order matters, not adjacency.
-      return (
-        !!(
-          root.compareDocumentPosition(host.footer) &
-          window.Node.DOCUMENT_POSITION_FOLLOWING
-        ) && subnav?.parentElement === host.nav.parentElement.parentElement
-      );
-    }
-    return { show, hide, intact };
+    return {
+      show,
+      hide,
+      get root() {
+        return root;
+      },
+      get subnav() {
+        return subnav;
+      },
+    };
   }
 
   const safeID = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -517,6 +542,76 @@
     };
   }
 
+  // One scheduler per application document; feeds retain their own user data.
+  function createRequestScheduler({ now = Date.now, delay = setTimeout } = {}) {
+    let inFlight = 0,
+      cooldown = 0,
+      paused = false,
+      scheduled = false;
+    const queue = [];
+    function wake() {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        dispatch();
+      });
+    }
+    function dispatch() {
+      if (paused) return;
+      while (inFlight < 3 && queue.length) {
+        const front = queue.findIndex((job) => job.isForeground());
+        const job = queue.splice(front < 0 ? 0 : front, 1)[0];
+        inFlight++;
+        job.attempts++;
+        job
+          .run()
+          .then(job.resolve, (error) => {
+            if (error instanceof RateLimitError) {
+              paused = true;
+              cooldown = Math.max(cooldown, error.retryAfter);
+              for (const waiting of queue.splice(0)) waiting.reject(error);
+            }
+            if (error instanceof RetryableError && job.attempts < 3) {
+              delay(() => {
+                if (paused) job.reject(new Error("请求已暂停，请稍后重试"));
+                else {
+                  queue.push(job);
+                  wake();
+                }
+              }, job.attempts * 1000);
+            } else job.reject(error);
+          })
+          .finally(() => {
+            inFlight--;
+            wake();
+          });
+      }
+    }
+    function submit(run, isForeground) {
+      if (paused) return Promise.reject(new Error("请求已暂停，请稍后重试"));
+      const result = new Promise((resolve, reject) => {
+        queue.push({ run, isForeground, resolve, reject, attempts: 0 });
+      });
+      wake();
+      return result;
+    }
+    function retry() {
+      if (paused && now() < cooldown) return false;
+      paused = false;
+      wake();
+      return true;
+    }
+    return {
+      submit,
+      wake,
+      retry,
+      get paused() {
+        return paused;
+      },
+    };
+  }
+
   // Service cursors are shared; displayed identities and late exclusions belong to a category.
   const topicKinds = ["group", "subject"];
   const kinds = [...topicKinds, "replies"];
@@ -535,7 +630,7 @@
 
   function createTopicFeed(
     search,
-    { user, origin, now = Date.now, delay = setTimeout, onChange = () => {} },
+    { user, origin, scheduler = createRequestScheduler(), onChange = () => {} },
   ) {
     const streams = Object.fromEntries(
       kinds.map((kind) => [
@@ -563,59 +658,9 @@
     );
     let received = 0;
     let foreground = null;
-    let inFlight = 0;
-    let cooldown = 0;
-    let paused = false;
-    const queue = [];
-    let scheduled = false;
-
     function setForeground(category) {
       foreground = category;
-      schedule();
-    }
-    function schedule() {
-      if (scheduled) return;
-      scheduled = true;
-      queueMicrotask(() => {
-        scheduled = false;
-        dispatch();
-      });
-    }
-    function dispatch() {
-      if (paused) return;
-      while (inFlight < 3 && queue.length) {
-        const front = queue.findIndex((job) => job.categories.has(foreground));
-        const job = queue.splice(front < 0 ? 0 : front, 1)[0];
-        inFlight++;
-        job.attempts++;
-        search({
-          user,
-          origin,
-          kind: job.kind,
-          offset: job.offset,
-          limit: job.limit,
-        })
-          .then(job.resolve, (error) => {
-            if (error instanceof RateLimitError) {
-              paused = true;
-              cooldown = Math.max(cooldown, error.retryAfter);
-              for (const waiting of queue.splice(0)) waiting.reject(error);
-            }
-            if (error instanceof RetryableError && job.attempts < 3) {
-              delay(() => {
-                if (paused) job.reject(new Error("请求已暂停，请稍后重试"));
-                else {
-                  queue.push(job);
-                  schedule();
-                }
-              }, job.attempts * 1000);
-            } else job.reject(error);
-          })
-          .finally(() => {
-            inFlight--;
-            schedule();
-          });
-      }
+      scheduler.wake();
     }
     function candidates(category) {
       const view = views[category];
@@ -684,17 +729,11 @@
     }
     function request(kind, offset, limit, category) {
       const stream = streams[kind];
-      const job = {
-        kind,
-        offset,
-        limit,
-        categories: new Set([category]),
-        attempts: 0,
-      };
-      const promise = new Promise((resolve, reject) => {
-        job.resolve = resolve;
-        job.reject = reject;
-      });
+      const job = { categories: new Set([category]) };
+      const promise = scheduler.submit(
+        () => search({ user, origin, kind, offset, limit }),
+        () => job.categories.has(foreground),
+      );
       const pending = { job, promise };
       stream.pending = pending;
       pending.promise = promise
@@ -715,8 +754,6 @@
         .finally(() => {
           if (stream.pending === pending) stream.pending = null;
         });
-      queue.push(job);
-      schedule();
       return pending;
     }
     async function fill(view) {
@@ -731,7 +768,7 @@
                   (item) => item.kind === kind,
                 ).length;
                 if (available >= view.goal || stream.exhausted) return;
-                if (paused) throw new Error("请求已暂停，请稍后重试");
+                if (scheduler.paused) throw new Error("请求已暂停，请稍后重试");
                 if (stream.offset > 5000)
                   throw unavailable(stream, view.category);
                 const pending =
@@ -764,7 +801,7 @@
         );
         if (failed) throw failed.reason;
       } finally {
-        schedule();
+        scheduler.wake();
       }
     }
     function reset(view) {
@@ -780,14 +817,15 @@
         })
         .finally(() => {
           view.pending = null;
-          if (view.restart && !paused) {
+          if (view.restart && !scheduler.paused) {
             view.restart = false;
             reset(view);
             run(view);
           } else {
             view.restart = false;
             // One source may have finished before a later click raised the goal.
-            if (!view.failure && !paused && view.goal > goal) run(view);
+            if (!view.failure && !scheduler.paused && view.goal > goal)
+              run(view);
           }
           notify();
         });
@@ -799,9 +837,8 @@
       const goal = 100 + 100 * Math.floor((page + 6) / 10);
       const higher = goal > view.goal;
       view.goal = Math.max(view.goal, goal);
-      if (retry && paused && now() < cooldown)
+      if (retry && !scheduler.retry())
         return Promise.resolve({ error: new Error("请求冷却中，请稍后重试") });
-      if (retry) paused = false;
       if (retry || higher) {
         if (view.pending && view.failure) view.restart = true;
         else if (!view.pending) reset(view);
@@ -1041,14 +1078,15 @@
 
   // Application boundary: a real Window and one replaceable network boundary.
   function start(window, { fetch = window.fetch.bind(window), timers } = {}) {
+    const { document } = window;
     const entryHost = inspectEntry(window);
-    if (!entryHost) {
-      if (categories[window.location.hash])
-        console.warn("用户帖子：当前页面无法安全挂载");
+    if (!entryHost) return;
+    if (entryHost.failure) {
+      showErrorPanel(entryHost.failure, "帖子入口插入");
       return;
     }
-    const { document } = window;
     if (entryHost.nav.querySelector("[data-user-topics-link]")) return;
+    removeErrorPanel();
     const entry = document.createElement("li");
     entry.dataset.userTopicsLink = "";
     const anchor = document.createElement("a");
@@ -1057,12 +1095,13 @@
     entry.append(anchor);
     entryHost.blog.parentElement.after(entry);
 
-    // Entry insertion is path-scoped. The takeover nodes, view, feed and
-    // runtime guards only come together at the first verified activation, so a
-    // page that cannot be verified surfaces a visible error instead of the
-    // entry silently never working.
+    // Entry insertion and entering the posts view are the only host checks.
+    // Once active, DOM changes never suspend or automatically retake the page.
+    const scheduler = createRequestScheduler({
+      now: timers?.now,
+      delay: timers?.setTimeout,
+    });
     let session = null;
-    let explicitNavigation = false;
     anchor.addEventListener("click", (event) => {
       if (
         event.button === 0 &&
@@ -1071,20 +1110,17 @@
         !event.shiftKey &&
         !event.altKey
       ) {
-        explicitNavigation = window.location.hash !== "#posts";
-        if (!explicitNavigation && !visible) route(true);
+        if (window.location.hash === "#posts" && !visible) route();
       }
     });
     let visible = false,
-      suspended = false,
       category = null,
-      takeoverEpoch = 0,
       previousTitle = null,
       ownedTitle = null;
     function updateTitle(next) {
       if (previousTitle === null) previousTitle = document.title;
       if (ownedTitle === null || document.title === ownedTitle) {
-        ownedTitle = postsTitle(entryHost.nickname, next);
+        ownedTitle = postsTitle(session.host.nickname, next);
         document.title = ownedTitle;
       }
     }
@@ -1098,8 +1134,7 @@
       const feed = createTopicFeed(createSearchEncore(fetch, timers), {
         user: host.user,
         origin: window.location.origin,
-        now: timers?.now,
-        delay: timers?.setTimeout,
+        scheduler,
         onChange: refresh,
       });
       const states = Object.fromEntries(
@@ -1116,125 +1151,31 @@
           },
         ]),
       );
-      return { host, view, feed, states, observer: watchHost(host) };
+      return { host, view, feed, states };
     }
-    // Re-verification refreshes every takeover node reference; the runtime
-    // guards and the view read them dynamically, the observer must be rebuilt.
-    function rebindSession(verified) {
-      session.observer.disconnect();
-      Object.assign(session.host, verified);
-      session.observer = watchHost(session.host);
-    }
-    function watchHost(host) {
-      const main = host.columns.parentElement;
-      const navWrapper = host.nav.parentElement;
-      const subjectNav = host.subjectNav;
-      const observer = new window.MutationObserver(() => {
-        if (visible && !activeHostValid()) route();
-      });
-      observer.observe(main, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ["class", "style"],
-      });
-      observer.observe(navWrapper, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-      observer.observe(host.profile, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ["id"],
-      });
-      observer.observe(subjectNav, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-      observer.observe(host.nav, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
-      observer.observe(host.footer, {
-        attributes: true,
-        attributeFilter: ["id"],
-      });
-      observer.observe(host.columns, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class", "style"],
-      });
-      observer.observe(host.wrapper, {
-        childList: true,
-        attributes: true,
-        attributeFilter: ["data-user-topics-active", "id"],
-      });
-      if (host.originalSub)
-        observer.observe(host.originalSub, {
-          attributes: true,
-          attributeFilter: [
-            "data-user-topics-original-subnav",
-            "class",
-            "style",
-          ],
-        });
-      return observer;
-    }
-    function showErrorPanel() {
-      if (document.querySelector("[data-user-topics-error]")) return;
-      const panel = document.createElement("section");
+    function showErrorPanel(failure, stage = "帖子视图挂载") {
+      const panel =
+        document.querySelector("[data-user-topics-error]") ||
+        document.createElement("section");
       panel.dataset.userTopicsError = "";
-      panel.textContent = "无法安全挂载帖子视图";
-      panel.style.cssText =
-        "max-width: 750px; margin: 6px auto 0; text-align: center;";
-      entryHost.subjectNav.after(panel);
-      console.warn("用户帖子：接管校验未通过，帖子视图未挂载");
+      panel.className = "navSubTabsWrapper";
+      panel.setAttribute("role", "alert");
+      const list = document.createElement("ul");
+      list.className = "navSubTabs";
+      const message = document.createElement("li");
+      message.textContent = `${stage}失败：${failure.reason}`;
+      list.append(message);
+      panel.replaceChildren(list);
+      failure.navMount.after(panel);
+      window.console.warn(`用户帖子：${message.textContent}`, failure);
     }
     function removeErrorPanel() {
       document.querySelector("[data-user-topics-error]")?.remove();
     }
-    const mounted = () => {
-      if (!session) return false;
-      const host = session.host;
-      const main = host.columns.parentElement;
-      const navWrapper = host.nav.parentElement;
-      const subjectNav = host.subjectNav;
-      return (
-        host.wrapper.matches("#wrapperNeue") &&
-        host.profile.matches("#headerProfile") &&
-        host.profile.parentElement === host.wrapper &&
-        main.matches(".mainWrapper") &&
-        host.profile.nextElementSibling === main &&
-        host.columns.parentElement === main &&
-        host.footer.matches("#footer") &&
-        host.footer.parentElement === main &&
-        (!host.originalSub ||
-          (host.originalSub.isConnected &&
-            host.originalSub.parentElement === subjectNav)) &&
-        subjectNav.matches(".subjectNav") &&
-        subjectNav.parentElement === host.profile &&
-        navWrapper.matches(".navTabsWrapper") &&
-        navWrapper.parentElement === subjectNav &&
-        host.nav.matches(".navTabs") &&
-        host.nav.parentElement === navWrapper
-      );
-    };
-    const activeHostValid = () =>
-      mounted() &&
-      session.host.wrapper.dataset.userTopicsActive === "on" &&
-      session.view.intact() &&
-      (!session.host.originalSub ||
-        session.host.originalSub.dataset.userTopicsOriginalSubnav === "on") &&
-      window.getComputedStyle(session.host.columns).display === "none" &&
-      (!session.host.originalSub ||
-        window.getComputedStyle(session.host.originalSub).display === "none");
     function paint(preserveFocus = false) {
       if (!visible || !session) return;
-      const root = document.querySelector("[data-user-topics-view]");
+      const { root, subnav } = session.view;
       const state = session.states[category];
-      const subnav = document.querySelector("[data-user-topics-subnav]");
       if (subnav) renderPostsNav(subnav, category);
       if (root)
         renderPosts(root, {
@@ -1259,10 +1200,6 @@
     }
     function refresh(filter) {
       if (!session || !visible || category !== filter) return;
-      if (!activeHostValid()) {
-        route();
-        return;
-      }
       const state = session.states[filter];
       if (state.pending || state.ready || !state.current.items?.length) return;
       const result = session.feed.snapshot(filter, state.page);
@@ -1280,10 +1217,6 @@
       if (!session) return;
       const state = session.states[filter];
       if (!state.ready || !visible || category !== filter) return;
-      if (!activeHostValid()) {
-        route();
-        return;
-      }
       const { target } = state.ready;
       const result = state.ready.result.error
         ? state.ready.result
@@ -1318,10 +1251,6 @@
     }
     async function load(filter, target, retry = false, continuing = false) {
       if (!visible || !session || category !== filter) return;
-      if (!activeHostValid()) {
-        route();
-        return;
-      }
       const state = session.states[filter];
       if (state.pending) return;
       state.started = true;
@@ -1329,7 +1258,7 @@
       state.ready = null;
       const scroll = !retry && target !== state.page;
       if (scroll) window.scrollTo(0, 0);
-      const epoch = takeoverEpoch;
+      const loadingSession = session;
       state.current = {
         ...state.current,
         loading: true,
@@ -1346,59 +1275,38 @@
       } catch (error) {
         result = { error };
       }
-      if (state.pending !== job || epoch !== takeoverEpoch) return;
+      if (session !== loadingSession || state.pending !== job) return;
       state.pending = null;
       state.ready = { target, result };
       publish(filter);
     }
-    // An explicit click on the entry can reenter after a suspended host recovers.
-    function route(explicit = false) {
+    function route() {
       const next = categories[window.location.hash];
-      const invalid = visible && (!mounted() || !activeHostValid());
-      if (!next || invalid) {
-        explicitNavigation = false;
+      if (!next) {
+        removeErrorPanel();
         if (visible) {
           visible = false;
-          suspended = Boolean(next && invalid);
-          if (suspended) takeoverEpoch++;
           category = null;
           session.feed.setForeground(null);
-          if (suspended)
-            for (const state of Object.values(session.states)) {
-              if (state.ready || state.pending || state.current.loading)
-                state.started = false;
-              state.ready = null;
-              state.pending = null;
-              state.current = { ...state.current, loading: false };
-            }
           anchor.classList.remove("focus");
           session.view.hide();
           restoreTitle();
-        } else if (!next) {
-          suspended = false;
-          removeErrorPanel();
         }
         return;
       }
-      if (suspended && !explicit && !explicitNavigation) return;
       if (!visible) {
-        // Takeover still needs a full safety check at activation time; a failed
-        // check shows the mount error panel and leaves the host untouched.
         const verified = verifyTakeover(window);
-        if (!verified) {
-          suspended = false;
-          showErrorPanel();
+        if (!verified || verified.failure) {
+          if (verified?.failure) showErrorPanel(verified.failure);
+          else removeErrorPanel();
           return;
         }
         removeErrorPanel();
-        suspended = false;
-        if (!session) session = establishSession(verified);
-        else rebindSession(verified);
-      } else suspended = false;
-      if (visible && category === next) {
-        explicitNavigation = false;
-        return;
+        if (!session || session.host.user !== verified.user)
+          session = establishSession(verified);
+        else Object.assign(session.host, verified);
       }
+      if (visible && category === next) return;
       visible = true;
       category = next;
       updateTitle(next);
@@ -1406,7 +1314,6 @@
       session.view.show();
       anchor.classList.add("focus");
       paint();
-      explicitNavigation = false;
       const state = session.states[next];
       if (state.ready) publish(next);
       else if (!state.started) load(next, state.page);

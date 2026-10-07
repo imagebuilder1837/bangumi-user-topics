@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
+import { setup, enter, tick, hit, envelope } from "./support/posts-page.mjs";
 
 test("loading and empty states inherit page text size beside the title", async () => {
   const app = setup();

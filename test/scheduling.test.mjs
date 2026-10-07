@@ -1,6 +1,91 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, enter, tick, hit, envelope } from "./app-support.mjs";
+import { setup, enter, tick, hit, envelope } from "./support/posts-page.mjs";
+
+test("changing the target user keeps the document-wide three-request limit", async (t) => {
+  const waiting = [];
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts",
+    respond: (offset, limit) =>
+      new Promise((resolve) => {
+        waiting.push(() => resolve(envelope([], offset, limit)));
+      }),
+  });
+  t.after(async () => {
+    app.window.location.hash = "#other";
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    for (let i = 0; i < 4; i++) {
+      for (const finish of waiting.splice(0)) finish();
+      await tick();
+    }
+    app.dom.window.close();
+  });
+  await tick();
+  assert.equal(app.requests.length, 2);
+  app.window.location.hash = "#other";
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  await tick();
+  app.document.querySelector('.navTabs a[href="/user/sai/blog"]').href =
+    "/user/other/blog";
+  app.window.history.replaceState(null, "", "/user/other/blog#posts");
+  app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+  await tick();
+  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests[2].request.searchParams.get("q"), "user:other");
+  waiting.shift()();
+  await tick();
+  assert.equal(app.requests.length, 4);
+  assert.equal(app.requests[3].request.searchParams.get("q"), "user:other");
+});
+
+test("changing the target user cannot bypass a shared 429 pause or cooldown", async () => {
+  let now = 0;
+  const calls = [];
+  const app = setup({
+    url: "https://bgm.tv/user/sai/blog#posts/group",
+    timers: { now: () => now },
+    fetchOverride: async (input) => {
+      const url = new URL(input);
+      calls.push(url);
+      if (calls.length === 1)
+        return { ok: false, status: 429, headers: { get: () => "2" } };
+      return {
+        ok: true,
+        json: async () =>
+          envelope(
+            [],
+            Number(url.searchParams.get("offset")),
+            Number(url.searchParams.get("limit")),
+          ),
+      };
+    },
+  });
+  try {
+    await tick();
+    assert.equal(calls.length, 1);
+    app.window.location.hash = "#other";
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    await tick();
+    app.document.querySelector('.navTabs a[href="/user/sai/blog"]').href =
+      "/user/other/blog";
+    app.window.history.replaceState(null, "", "/user/other/blog#posts/group");
+    app.window.dispatchEvent(new app.window.HashChangeEvent("hashchange"));
+    await tick();
+    assert.equal(calls.length, 1);
+    app.document.querySelector("[role=status] a.chiiBtn").click();
+    await tick();
+    assert.equal(calls.length, 1);
+    now = 2000;
+    await tick();
+    assert.equal(calls.length, 1);
+    app.document.querySelector("[role=status] a.chiiBtn").click();
+    await tick();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].searchParams.get("q"), "user:other");
+  } finally {
+    app.dom.window.close();
+  }
+});
 
 test("three query streams can be in flight together without publishing switched-away results", async (t) => {
   const waiting = [];

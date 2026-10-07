@@ -19,6 +19,7 @@ const sources = [
   ...(await files("src/")),
   ...(await files("scripts/")),
   ...(await files("test/")),
+  ...(await files("test/support/")),
 ];
 for (const file of sources) run(process.execPath, ["--check", file]);
 run("npm", ["run", "format:check"]);

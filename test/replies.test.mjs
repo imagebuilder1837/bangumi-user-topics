@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, tick, envelope, hit } from "./app-support.mjs";
+import { setup, tick, envelope, hit } from "./support/posts-page.mjs";
 
 const navigate = (app, hash) => {
   app.window.location.hash = hash;
