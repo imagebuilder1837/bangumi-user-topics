@@ -1,6 +1,6 @@
 # 以 SearchEncore 为唯一帖子数据源
 
-Bangumi 官方 API 没有聚合“某用户发起的小组话题与条目讨论”的端点，新建服务器路径也不可行；本项目的全部帖子查询因此走第三方镜像索引 SearchEncore（bgmdb.ry.mk）的两个搜索 endpoint，从宿主页面用普通 `fetch`（`credentials=omit`）访问——三域名的 CORS 可用性已有实测，无需特权请求。接受其代价：索引可能漂移和遗漏、存在服务检索上限、服务不可用即帖子功能不可用；结果不冒充完整发帖档案，空结果只能说“没有找到已收录的帖子”。见 `docs/external/search-encore.md`。
+Bangumi 官方 API 没有聚合“某用户发起的小组话题与条目讨论”的端点，新建服务器路径也不可行；本项目的全部帖子查询因此走第三方镜像索引 SearchEncore（bgmdb.ry.mk）的两个搜索 endpoint，从宿主页面用普通 `fetch`（`credentials=omit`）访问——三域名的 CORS 可用性已有实测，无需特权请求。接受其代价：索引可能漂移和遗漏、存在服务检索上限、服务不可用时无法获取或核验新数据，已有成功缓存仍可读取；结果不冒充完整发帖档案，空结果只能说“没有找到已收录的帖子”。见 `docs/external/search-encore.md`。
 
 ## Consequences
 

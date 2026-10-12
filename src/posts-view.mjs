@@ -1,3 +1,5 @@
+const rendered = new WeakMap();
+
 function el(document, tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -67,7 +69,17 @@ export function renderPosts(
     return null;
   };
   const key = focusKey(active);
-  root.replaceChildren();
+  const previous = rendered.get(root);
+  const list = root.querySelector(":scope > .entry-list");
+  const reuseList = Boolean(
+    list &&
+      previous?.category === category &&
+      previous.items.length === state.items?.length &&
+      previous.items.every((item, i) => item === state.items[i]),
+  );
+  for (const child of [...root.children])
+    if (!reuseList || child !== list) child.remove();
+  rendered.set(root, { category, items: state.items || [] });
   const header = el(d, "div", "flex-center-v");
   const title = el(d, "h2", "title", postsTitle(nickname, category));
   const status = el(d, "span");
@@ -75,11 +87,13 @@ export function renderPosts(
   const message = d.createTextNode("");
   status.append(message);
   header.append(title, status);
-  root.append(header);
+  root.prepend(header);
   const contentName = category === "replies" ? "评论回复" : "帖子";
   if (state.loading) message.textContent = `正在加载${contentName}…`;
   else if (state.prefetching) message.textContent = `正在预加载${contentName}…`;
-  if (state.items?.length) {
+  if (state.cacheStatus) message.textContent = state.cacheStatus;
+  if (state.cacheWarning) message.textContent = state.cacheWarning.message;
+  if (state.items?.length && !reuseList) {
     const list = el(d, "div", "entry-list");
     for (const item of state.items) {
       const row = el(d, "div", "item clearit");
@@ -116,12 +130,20 @@ export function renderPosts(
       list.append(row);
     }
     root.append(list);
-  } else if (!state.loading && !state.error)
+  } else if (
+    !state.items?.length &&
+    !state.loading &&
+    !state.error &&
+    !state.cacheStatus &&
+    !state.cacheWarning
+  )
     message.textContent = `没有找到已收录的${contentName}`;
   if (state.error || state.warning) {
     message.textContent =
       state.error?.message ||
-      `预加载未完成：${state.warning?.message || "请继续重试"}`;
+      `${state.cacheFailure ? "缓存更新失败，正在使用缓存" : "预加载未完成"}：${state.warning?.message || "请继续重试"}`;
+    if (state.cacheWarning)
+      message.textContent += `；${state.cacheWarning.message}`;
     const retry = el(d, "a", "chiiBtn");
     retry.href = category === "all" ? "#posts" : `#posts/${category}`;
     retry.append(el(d, "span", "", "重试"));

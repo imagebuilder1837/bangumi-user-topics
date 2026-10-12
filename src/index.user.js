@@ -369,6 +369,16 @@
     return {
       key: `reply:${row.source}:${row.id}`,
       kind: "replies",
+      data: {
+        source: row.source,
+        id: row.id,
+        containerID: row.containerID,
+        containerTitle: row.containerTitle ?? null,
+        excerpt: row.excerpt,
+        parentID: row.parentID ?? null,
+        parentName: row.parentName ?? null,
+        createdAt: row.createdAt,
+      },
       title:
         row.containerTitle?.trim() || `${source.container} #${row.containerID}`,
       excerpt: row.excerpt.trim() || "暂无可用摘要",
@@ -423,6 +433,16 @@
       return {
         key: `${kind}:${row.id}`,
         kind,
+        data: {
+          id: row.id,
+          kind: row.kind,
+          parentID: row.parentID,
+          title: row.title,
+          replyCount: row.replyCount,
+          createdAt: row.createdAt,
+          updatedAt: 0,
+          parentName: row.parentName ?? null,
+        },
         title: row.title || "无标题",
         parent: row.parentName || (kind === "group" ? "小组话题" : "条目讨论"),
         replies: row.replyCount,
@@ -612,9 +632,107 @@
     };
   }
 
+  const headFingerprint = (items) =>
+    JSON.stringify(items.map(({ data, received, ...item }) => item));
+
+  // Storage is optional. Resolve the property inside the guard: even accessing
+  // window.localStorage can throw when browser policy disallows persistence.
+  function createTopicCache(getStorage, { user, origin }) {
+    const key = (kind) =>
+      `bangumi-user-topics:stream:${encodeURIComponent(user)}:${kind}`;
+    const normalize = (data, kind) =>
+      normalizeBatch(
+        {
+          data,
+          pagination: {
+            offset: 0,
+            limit: data.length,
+            total: 0,
+            totalIsEstimate: false,
+          },
+          meta: { executionMs: 0 },
+        },
+        { offset: 0, limit: data.length, origin, kind },
+      );
+    return {
+      read(kind) {
+        try {
+          const record = JSON.parse(getStorage().getItem(key(kind)));
+          if (
+            record?.version !== 1 ||
+            record.user !== user ||
+            record.kind !== kind ||
+            !Array.isArray(record.rows) ||
+            !Array.isArray(record.head) ||
+            !Number.isSafeInteger(record.offset) ||
+            record.offset < record.rows.length ||
+            record.offset > 5050 ||
+            typeof record.exhausted !== "boolean" ||
+            !Number.isSafeInteger(record.goal) ||
+            record.goal < 100 ||
+            record.goal % 100 !== 0 ||
+            (!record.exhausted && record.rows.length < record.goal) ||
+            record.head.length > Math.min(50, record.offset) ||
+            (!record.head.length &&
+              (record.offset !== 0 || record.rows.length || !record.exhausted))
+          )
+            return null;
+          const rows = normalize(record.rows, kind);
+          const head = normalize(record.head, kind);
+          const identities = new Set(rows.map((item) => item.key));
+          const initial = new Map();
+          for (const item of head)
+            if (!initial.has(item.key)) initial.set(item.key, item);
+          if (
+            identities.size !== rows.length ||
+            head.some((item) => !identities.has(item.key)) ||
+            headFingerprint([...initial.values()]) !==
+              headFingerprint(rows.slice(0, initial.size))
+          )
+            return null;
+          return {
+            rows,
+            head,
+            offset: record.offset,
+            exhausted: record.exhausted,
+          };
+        } catch {
+          return null;
+        }
+      },
+      write(kind, stream, goal) {
+        try {
+          getStorage().setItem(
+            key(kind),
+            JSON.stringify({
+              version: 1,
+              user,
+              kind,
+              goal,
+              rows: stream.rows.map((item) => item.data),
+              head: stream.head.map((item) => item.data),
+              offset: stream.offset,
+              exhausted: stream.exhausted,
+            }),
+          );
+          return null;
+        } catch {
+          return new Error("缓存保存失败，本次使用内存数据");
+        }
+      },
+    };
+  }
+
   // Service cursors are shared; displayed identities and late exclusions belong to a category.
   const topicKinds = ["group", "subject"];
   const kinds = [...topicKinds, "replies"];
+  const sourceNames = {
+    group: "小组话题",
+    subject: "条目讨论",
+    replies: "评论回复",
+  };
+  const sourceFailure = (kind, error) =>
+    new Error(`${sourceNames[kind]}：${error.message}`, { cause: error });
   const requiredKinds = (category) =>
     category === "all" ? topicKinds : [category];
   const order = (a, b) =>
@@ -630,25 +748,50 @@
 
   function createTopicFeed(
     search,
-    { user, origin, scheduler = createRequestScheduler(), onChange = () => {} },
+    {
+      user,
+      origin,
+      scheduler = createRequestScheduler(),
+      cache,
+      onChange = () => {},
+    },
   ) {
     const streams = Object.fromEntries(
       kinds.map((kind) => [
         kind,
-        { offset: 0, exhausted: false, pending: null, rows: [] },
+        {
+          offset: 0,
+          exhausted: false,
+          pending: null,
+          progressWaiters: new Set(),
+          rows: [],
+          head: [],
+          checked: true,
+          error: null,
+          failedGoal: 0,
+          draft: null,
+          dirty: false,
+          cached: false,
+          storageWarning: null,
+        },
       ]),
     );
-    const known = new Map();
     const views = Object.fromEntries(
       ["all", ...kinds].map((kind) => [
         kind,
         {
           category: kind,
+          revision: 0,
+          refreshing: false,
+          hold: null,
+          changed: false,
           pages: new Map(),
           excluded: new Set(),
           frozenAt: 0,
           goal: 0,
           failure: null,
+          failureKind: null,
+          sourceFailures: {},
           pending: null,
           restart: false,
           waiters: new Set(),
@@ -657,22 +800,39 @@
       ]),
     );
     let received = 0;
+    for (const kind of kinds) {
+      const record = cache?.read(kind);
+      if (!record) continue;
+      Object.assign(streams[kind], record, { checked: false, cached: true });
+      for (const item of record.rows) {
+        item.received = received++;
+      }
+    }
     let foreground = null;
     function setForeground(category) {
       foreground = category;
       scheduler.wake();
     }
-    function candidates(category) {
+    function visibleStreams(view) {
+      return view.hold || streams;
+    }
+    function candidates(category, live = false) {
       const view = views[category];
+      const sources = live ? streams : visibleStreams(view);
+      const ignoreFreeze = live && view.changed;
       const displayed = new Set([...view.pages.values()].flat());
-      const boundary = view.pages.size
-        ? known.get(view.pages.get(Math.max(...view.pages.keys())).at(-1))
-        : null;
+      const boundaryKey = view.pages
+        .get(Math.max(...view.pages.keys()))
+        ?.at(-1);
+      const boundary = requiredKinds(category)
+        .flatMap((kind) => visibleStreams(view)[kind].rows)
+        .find((item) => item.key === boundaryKey);
       const result = [];
       for (const kind of requiredKinds(category)) {
-        for (const item of streams[kind].rows) {
-          if (view.excluded.has(item.key)) continue;
+        for (const item of sources[kind].rows) {
+          if (!ignoreFreeze && view.excluded.has(item.key)) continue;
           if (
+            !ignoreFreeze &&
             boundary &&
             item.received >= view.frozenAt &&
             !displayed.has(item.key) &&
@@ -691,30 +851,89 @@
       const view = views[category];
       const entries = candidates(category);
       const required = requiredKinds(category);
-      const exhausted = required.every((kind) => streams[kind].exhausted);
+      const sources = visibleStreams(view);
+      const byKey = new Map(
+        required
+          .flatMap((kind) => sources[kind].rows)
+          .map((item) => [item.key, item]),
+      );
+      const exhausted = required.every((kind) => sources[kind].exhausted);
       const depth = Math.min(
         entries.length,
         ...required.map((kind) =>
-          streams[kind].exhausted
+          sources[kind].exhausted
             ? Infinity
             : entries.filter((item) => item.kind === kind).length,
         ),
       );
-      const frozen = view.pages.get(page);
-      const goal = page * 10;
+      const actualPage =
+        view.revision && exhausted
+          ? Math.min(page, Math.max(1, Math.ceil(entries.length / 10)))
+          : page;
+      const frozen = view.pages.get(actualPage);
+      const goal = actualPage * 10;
+      const failedKind = required.find((kind) => streams[kind].error);
+      const failure =
+        view.failure ||
+        (failedKind
+          ? sourceFailure(failedKind, streams[failedKind].error)
+          : null);
       if (!frozen && depth < goal && !exhausted)
-        return view.failure && !view.restart ? { error: view.failure } : null;
+        return failure && !view.restart ? { error: failure } : null;
       return {
+        revision: view.revision,
+        page: actualPage,
         items: frozen
-          ? frozen.map((key) => known.get(key))
-          : entries.slice((page - 1) * 10, goal),
+          ? frozen.map((key) => byKey.get(key))
+          : entries.slice((actualPage - 1) * 10, goal),
         next: depth > goal ? "yes" : exhausted ? "no" : "unknown",
         confirmedPage: Math.ceil(depth / 10),
         prefetching: Boolean(view.pending),
-        warning: view.failure,
+        warning: failure,
+        cacheStatus:
+          view.pending &&
+          (view.changed || required.some((kind) => streams[kind].draft))
+            ? "正在更新缓存，暂用缓存…"
+            : view.pending && required.some((kind) => !streams[kind].checked)
+              ? "正在核验缓存…"
+              : null,
+        cacheFailure: Boolean(
+          failure &&
+            (view.refreshing || (failedKind && streams[failedKind].cached)),
+        ),
+        cacheWarning: required
+          .map((kind) => streams[kind].storageWarning)
+          .find(Boolean),
       };
     }
     function notify() {
+      // Join an existing rebuild for the visible cached category before a lower
+      // category can commit it. Failed sources remain stopped until explicit retry.
+      const active = views[foreground];
+      if (
+        active?.goal &&
+        !active.pending &&
+        requiredKinds(active.category).some(
+          (kind) => streams[kind].draft && !streams[kind].error,
+        )
+      )
+        run(active);
+      for (const stream of Object.values(streams)) {
+        for (const resolve of stream.progressWaiters) resolve();
+        stream.progressWaiters.clear();
+      }
+      const all = views.all;
+      if (
+        all.hold &&
+        !all.changed &&
+        topicKinds.every(
+          (kind) =>
+            streams[kind].cached &&
+            streams[kind].checked &&
+            !streams[kind].draft,
+        )
+      )
+        all.hold = null;
       for (const view of Object.values(views)) {
         if (!view.goal) continue;
         for (const waiter of view.waiters) {
@@ -727,7 +946,87 @@
         onChange(view.category);
       }
     }
-    function request(kind, offset, limit, category) {
+    function ingest(target, batch) {
+      const identities = new Set(target.rows.map((item) => item.key));
+      if (target.offset === 0) target.head = batch;
+      for (const item of batch) {
+        if (identities.has(item.key)) continue;
+        identities.add(item.key);
+        item.received = received++;
+        target.rows.push(item);
+      }
+      target.offset += batch.length;
+      if (!batch.length) target.exhausted = true;
+      target.dirty = true;
+    }
+    function invalidate(kind) {
+      for (const view of Object.values(views)) {
+        if (!requiredKinds(view.category).includes(kind)) continue;
+        if (view.hold) view.changed = true;
+        else resetPages(view);
+      }
+    }
+    function resetPages(view) {
+      view.pages.clear();
+      view.excluded.clear();
+      view.frozenAt = 0;
+      view.revision++;
+    }
+    function resumeSource(kind) {
+      streams[kind].error = null;
+      streams[kind].failedGoal = 0;
+      for (const view of Object.values(views)) delete view.sourceFailures[kind];
+    }
+    function clearSourceFailure(kind) {
+      resumeSource(kind);
+      for (const view of Object.values(views)) {
+        if (view.failureKind !== kind) continue;
+        view.failure = null;
+        view.failureKind = null;
+      }
+    }
+    function availableFor(view, kind) {
+      return streams[kind].draft
+        ? streams[kind].draft.rows.length
+        : candidates(view.category, true).filter((item) => item.kind === kind)
+            .length;
+    }
+    function activeConsumers(kind) {
+      return Object.values(views).filter(
+        (view) => view.pending && requiredKinds(view.category).includes(kind),
+      );
+    }
+    function rememberSourceFailure(kind, error) {
+      streams[kind].error = error;
+      streams[kind].failedGoal = Math.max(
+        streams[kind].failedGoal,
+        ...activeConsumers(kind).map((view) => view.goal),
+      );
+    }
+    function save(kind, goal) {
+      const stream = streams[kind];
+      const target = stream.draft || stream;
+      const consumers = activeConsumers(kind);
+      // Shared work commits only at the highest outstanding category target.
+      if (
+        !target.exhausted &&
+        consumers.some((view) => availableFor(view, kind) < view.goal)
+      )
+        return false;
+      goal = Math.max(goal, ...consumers.map((view) => view.goal));
+      clearSourceFailure(kind);
+      if (stream.draft) {
+        Object.assign(stream, stream.draft, { draft: null });
+        invalidate(kind);
+      }
+      if (stream.dirty) {
+        stream.storageWarning = cache?.write(kind, stream, goal) || null;
+        stream.dirty = false;
+      }
+      notify();
+      return true;
+    }
+    function request(kind, offset, limit, category, consume) {
       const stream = streams[kind];
       const job = { categories: new Set([category]) };
       const promise = scheduler.submit(
@@ -740,16 +1039,12 @@
         .then((batch) => {
           if (!Array.isArray(batch) || batch.length > limit)
             throw new Error("SearchEncore 返回格式无效");
-          for (const item of batch) {
-            if (!known.has(item.key)) {
-              item.received = received++;
-              known.set(item.key, item);
-              stream.rows.push(item);
-            }
-          }
-          stream.offset += batch.length;
-          if (!batch.length) stream.exhausted = true;
+          consume(batch);
           notify();
+        })
+        .catch((error) => {
+          rememberSourceFailure(kind, error);
+          throw error;
         })
         .finally(() => {
           if (stream.pending === pending) stream.pending = null;
@@ -762,35 +1057,88 @@
           requiredKinds(view.category).map(async (kind) => {
             const stream = streams[kind];
             try {
+              // Joining another source's rebuild must preserve this source's
+              // failed target, including category-specific no-progress pauses.
+              if (view.sourceFailures[kind]) throw view.sourceFailures[kind];
+              if (stream.error) throw stream.error;
+              if (!stream.checked) {
+                const pending =
+                  stream.pending ||
+                  request(kind, 0, 50, view.category, (batch) => {
+                    if (
+                      headFingerprint(batch) !== headFingerprint(stream.head)
+                    ) {
+                      stream.draft = {
+                        rows: [],
+                        head: [],
+                        offset: 0,
+                        exhausted: false,
+                      };
+                      ingest(stream.draft, batch);
+                    }
+                    stream.checked = true;
+                    clearSourceFailure(kind);
+                  });
+                pending.job.categories.add(view.category);
+                await pending.promise;
+              }
               while (true) {
-                if (view.failure) throw view.failure;
-                const available = candidates(view.category).filter(
-                  (item) => item.kind === kind,
-                ).length;
-                if (available >= view.goal || stream.exhausted) return;
+                if (stream.error) throw stream.error;
+                const target = stream.draft || stream;
+                const available = availableFor(view, kind);
+                if (available >= view.goal || target.exhausted) {
+                  if (save(kind, view.goal)) return;
+                  // Another category owns a higher shared target. Keep the barrier
+                  // until its progress completes or fails, without issuing extra work.
+                  const error = await new Promise((resolve) =>
+                    stream.progressWaiters.add(resolve),
+                  );
+                  if (error) throw error;
+                  continue;
+                }
+                // A same-round independent consumer inherits this higher target.
+                // Otherwise stop the failed aggregate without poisoning this stream.
+                if (
+                  view.failure &&
+                  !view.refreshing &&
+                  !activeConsumers(kind).some((consumer) => consumer !== view)
+                )
+                  return;
                 if (scheduler.paused) throw new Error("请求已暂停，请稍后重试");
-                if (stream.offset > 5000)
-                  throw unavailable(stream, view.category);
+                if (target.offset > 5000)
+                  throw unavailable(target, view.category);
                 const pending =
                   stream.pending ||
                   request(
                     kind,
-                    stream.offset,
+                    target.offset,
                     Math.min(50, view.goal - available),
                     view.category,
+                    (batch) => ingest(target, batch),
                   );
                 pending.job.categories.add(view.category);
                 await pending.promise;
-                const after = candidates(view.category).filter(
-                  (item) => item.kind === kind,
-                ).length;
+                const after = availableFor(view, kind);
                 view.stalled[kind] =
                   after > available ? 0 : view.stalled[kind] + 1;
-                if (!stream.exhausted && view.stalled[kind] >= 3)
+                if (
+                  !(stream.draft || stream).exhausted &&
+                  view.stalled[kind] >= 3
+                )
                   throw new Error("连续三批没有有效新增，请继续重试");
               }
             } catch (error) {
-              view.failure ||= error;
+              view.sourceFailures[kind] = error;
+              for (const resolve of stream.progressWaiters) resolve(error);
+              stream.progressWaiters.clear();
+              if (stream.cached) rememberSourceFailure(kind, error);
+              if (!view.failure) {
+                view.failure =
+                  view.refreshing || stream.cached
+                    ? sourceFailure(kind, error)
+                    : error;
+                view.failureKind = kind;
+              }
               notify();
               throw error;
             }
@@ -806,9 +1154,30 @@
     }
     function reset(view) {
       view.failure = null;
+      view.failureKind = null;
+      view.sourceFailures = {};
       view.stalled = Object.fromEntries(kinds.map((kind) => [kind, 0]));
     }
     function run(view) {
+      view.refreshing =
+        Boolean(view.hold) ||
+        requiredKinds(view.category).some(
+          (kind) =>
+            streams[kind].cached &&
+            (!streams[kind].checked ||
+              streams[kind].draft ||
+              streams[kind].error),
+        );
+      if (view.category === "all" && view.refreshing && !view.hold)
+        view.hold = Object.fromEntries(
+          topicKinds.map((kind) => [
+            kind,
+            {
+              rows: [...streams[kind].rows],
+              exhausted: streams[kind].exhausted,
+            },
+          ]),
+        );
       const goal = view.goal;
       view.pending = Promise.resolve()
         .then(() => fill(view))
@@ -827,6 +1196,11 @@
             if (!view.failure && !scheduler.paused && view.goal > goal)
               run(view);
           }
+          if (!view.pending && view.hold) {
+            view.hold = null;
+            if (view.changed) resetPages(view);
+            view.changed = false;
+          }
           notify();
         });
     }
@@ -842,6 +1216,16 @@
       if (retry || higher) {
         if (view.pending && view.failure) view.restart = true;
         else if (!view.pending) reset(view);
+        for (const kind of requiredKinds(category)) {
+          const stream = streams[kind];
+          // Higher targets resume ordinary loads only, never failed verification
+          // or an unfinished cache rebuild. Explicit retry may resume either.
+          if (
+            retry ||
+            (stream.checked && !stream.draft && goal > stream.failedGoal)
+          )
+            resumeSource(kind);
+        }
       }
       if (!view.pending && !view.failure) run(view);
       const result = snapshot(category, page);
@@ -861,6 +1245,8 @@
     }
     return { prepare, snapshot, commit, setForeground };
   }
+
+  const rendered = new WeakMap();
 
   function el(document, tag, className, text) {
     const node = document.createElement(tag);
@@ -931,7 +1317,17 @@
       return null;
     };
     const key = focusKey(active);
-    root.replaceChildren();
+    const previous = rendered.get(root);
+    const list = root.querySelector(":scope > .entry-list");
+    const reuseList = Boolean(
+      list &&
+        previous?.category === category &&
+        previous.items.length === state.items?.length &&
+        previous.items.every((item, i) => item === state.items[i]),
+    );
+    for (const child of [...root.children])
+      if (!reuseList || child !== list) child.remove();
+    rendered.set(root, { category, items: state.items || [] });
     const header = el(d, "div", "flex-center-v");
     const title = el(d, "h2", "title", postsTitle(nickname, category));
     const status = el(d, "span");
@@ -939,12 +1335,14 @@
     const message = d.createTextNode("");
     status.append(message);
     header.append(title, status);
-    root.append(header);
+    root.prepend(header);
     const contentName = category === "replies" ? "评论回复" : "帖子";
     if (state.loading) message.textContent = `正在加载${contentName}…`;
     else if (state.prefetching)
       message.textContent = `正在预加载${contentName}…`;
-    if (state.items?.length) {
+    if (state.cacheStatus) message.textContent = state.cacheStatus;
+    if (state.cacheWarning) message.textContent = state.cacheWarning.message;
+    if (state.items?.length && !reuseList) {
       const list = el(d, "div", "entry-list");
       for (const item of state.items) {
         const row = el(d, "div", "item clearit");
@@ -981,12 +1379,20 @@
         list.append(row);
       }
       root.append(list);
-    } else if (!state.loading && !state.error)
+    } else if (
+      !state.items?.length &&
+      !state.loading &&
+      !state.error &&
+      !state.cacheStatus &&
+      !state.cacheWarning
+    )
       message.textContent = `没有找到已收录的${contentName}`;
     if (state.error || state.warning) {
       message.textContent =
         state.error?.message ||
-        `预加载未完成：${state.warning?.message || "请继续重试"}`;
+        `${state.cacheFailure ? "缓存更新失败，正在使用缓存" : "预加载未完成"}：${state.warning?.message || "请继续重试"}`;
+      if (state.cacheWarning)
+        message.textContent += `；${state.cacheWarning.message}`;
       const retry = el(d, "a", "chiiBtn");
       retry.href = category === "all" ? "#posts" : `#posts/${category}`;
       retry.append(el(d, "span", "", "重试"));
@@ -1101,6 +1507,7 @@
       now: timers?.now,
       delay: timers?.setTimeout,
     });
+    const sessions = new Map();
     let session = null;
     anchor.addEventListener("click", (event) => {
       if (
@@ -1135,6 +1542,10 @@
         user: host.user,
         origin: window.location.origin,
         scheduler,
+        cache: createTopicCache(() => window.localStorage, {
+          user: host.user,
+          origin: window.location.origin,
+        }),
         onChange: refresh,
       });
       const states = Object.fromEntries(
@@ -1201,15 +1612,30 @@
     function refresh(filter) {
       if (!session || !visible || category !== filter) return;
       const state = session.states[filter];
-      if (state.pending || state.ready || !state.current.items?.length) return;
+      if (state.pending || state.ready || !state.started) return;
       const result = session.feed.snapshot(filter, state.page);
-      if (!result || result.error) return;
+      if (!result) {
+        load(filter, state.page);
+        return;
+      }
+      if (result.error) return;
+      if (result.revision !== state.current.revision) {
+        state.page = result.page;
+        state.confirmedPage = result.confirmedPage;
+        state.current = { ...result, loading: false, target: state.page };
+        session.feed.commit(filter, state.page, result.items);
+        paint(true);
+        return;
+      }
       state.confirmedPage = Math.max(state.confirmedPage, result.confirmedPage);
       state.current = {
         ...state.current,
         next: result.next,
         warning: result.warning,
         prefetching: result.prefetching,
+        cacheStatus: result.cacheStatus,
+        cacheWarning: result.cacheWarning,
+        cacheFailure: result.cacheFailure,
       };
       paint(true);
     }
@@ -1229,15 +1655,17 @@
           error: result.error,
           target,
         };
-      else if (result.items.length) {
-        session.feed.commit(filter, target, result.items);
-        state.page = target;
-        state.confirmedPage = Math.max(
-          state.confirmedPage,
-          result.confirmedPage,
-          target,
-        );
-        state.current = { ...result, loading: false, target };
+      else if (
+        result.items.length ||
+        result.revision !== state.current.revision
+      ) {
+        state.page = result.page;
+        session.feed.commit(filter, state.page, result.items);
+        state.confirmedPage =
+          result.revision !== state.current.revision
+            ? result.confirmedPage
+            : Math.max(state.confirmedPage, result.confirmedPage, state.page);
+        state.current = { ...result, loading: false, target: state.page };
       } else
         state.current = {
           ...state.current,
@@ -1275,10 +1703,10 @@
       } catch (error) {
         result = { error };
       }
-      if (session !== loadingSession || state.pending !== job) return;
+      if (state.pending !== job) return;
       state.pending = null;
       state.ready = { target, result };
-      publish(filter);
+      if (session === loadingSession) publish(filter);
     }
     function route() {
       const next = categories[window.location.hash];
@@ -1302,9 +1730,11 @@
           return;
         }
         removeErrorPanel();
-        if (!session || session.host.user !== verified.user)
-          session = establishSession(verified);
-        else Object.assign(session.host, verified);
+        if (!session || session.host.user !== verified.user) {
+          session = sessions.get(verified.user) || establishSession(verified);
+          sessions.set(verified.user, session);
+        }
+        Object.assign(session.host, verified);
       }
       if (visible && category === next) return;
       visible = true;
@@ -1320,7 +1750,11 @@
       else if (state.pending) {
         state.current = { ...state.current, loading: true };
         paint();
-      } else refresh(next);
+      } else {
+        const result = session.feed.snapshot(next, state.page);
+        if (!result) load(next, state.page);
+        else refresh(next);
+      }
     }
     window.addEventListener("hashchange", () => route());
     route();

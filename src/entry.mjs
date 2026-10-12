@@ -1,6 +1,7 @@
 import { inspectEntry, verifyTakeover, createHostView } from "./host-view.mjs";
 import { createSearchEncore } from "./search-encore.mjs";
 import { createTopicFeed } from "./topic-feed.mjs";
+import { createTopicCache } from "./topic-cache.mjs";
 import { createRequestScheduler } from "./request-scheduler.mjs";
 import { postsTitle, renderPosts, renderPostsNav } from "./posts-view.mjs";
 
@@ -39,6 +40,7 @@ export function start(
     now: timers?.now,
     delay: timers?.setTimeout,
   });
+  const sessions = new Map();
   let session = null;
   anchor.addEventListener("click", (event) => {
     if (
@@ -73,6 +75,10 @@ export function start(
       user: host.user,
       origin: window.location.origin,
       scheduler,
+      cache: createTopicCache(() => window.localStorage, {
+        user: host.user,
+        origin: window.location.origin,
+      }),
       onChange: refresh,
     });
     const states = Object.fromEntries(
@@ -138,15 +144,30 @@ export function start(
   function refresh(filter) {
     if (!session || !visible || category !== filter) return;
     const state = session.states[filter];
-    if (state.pending || state.ready || !state.current.items?.length) return;
+    if (state.pending || state.ready || !state.started) return;
     const result = session.feed.snapshot(filter, state.page);
-    if (!result || result.error) return;
+    if (!result) {
+      load(filter, state.page);
+      return;
+    }
+    if (result.error) return;
+    if (result.revision !== state.current.revision) {
+      state.page = result.page;
+      state.confirmedPage = result.confirmedPage;
+      state.current = { ...result, loading: false, target: state.page };
+      session.feed.commit(filter, state.page, result.items);
+      paint(true);
+      return;
+    }
     state.confirmedPage = Math.max(state.confirmedPage, result.confirmedPage);
     state.current = {
       ...state.current,
       next: result.next,
       warning: result.warning,
       prefetching: result.prefetching,
+      cacheStatus: result.cacheStatus,
+      cacheWarning: result.cacheWarning,
+      cacheFailure: result.cacheFailure,
     };
     paint(true);
   }
@@ -166,15 +187,17 @@ export function start(
         error: result.error,
         target,
       };
-    else if (result.items.length) {
-      session.feed.commit(filter, target, result.items);
-      state.page = target;
-      state.confirmedPage = Math.max(
-        state.confirmedPage,
-        result.confirmedPage,
-        target,
-      );
-      state.current = { ...result, loading: false, target };
+    else if (
+      result.items.length ||
+      result.revision !== state.current.revision
+    ) {
+      state.page = result.page;
+      session.feed.commit(filter, state.page, result.items);
+      state.confirmedPage =
+        result.revision !== state.current.revision
+          ? result.confirmedPage
+          : Math.max(state.confirmedPage, result.confirmedPage, state.page);
+      state.current = { ...result, loading: false, target: state.page };
     } else
       state.current = {
         ...state.current,
@@ -212,10 +235,10 @@ export function start(
     } catch (error) {
       result = { error };
     }
-    if (session !== loadingSession || state.pending !== job) return;
+    if (state.pending !== job) return;
     state.pending = null;
     state.ready = { target, result };
-    publish(filter);
+    if (session === loadingSession) publish(filter);
   }
   function route() {
     const next = categories[window.location.hash];
@@ -239,9 +262,11 @@ export function start(
         return;
       }
       removeErrorPanel();
-      if (!session || session.host.user !== verified.user)
-        session = establishSession(verified);
-      else Object.assign(session.host, verified);
+      if (!session || session.host.user !== verified.user) {
+        session = sessions.get(verified.user) || establishSession(verified);
+        sessions.set(verified.user, session);
+      }
+      Object.assign(session.host, verified);
     }
     if (visible && category === next) return;
     visible = true;
@@ -257,7 +282,11 @@ export function start(
     else if (state.pending) {
       state.current = { ...state.current, loading: true };
       paint();
-    } else refresh(next);
+    } else {
+      const result = session.feed.snapshot(next, state.page);
+      if (!result) load(next, state.page);
+      else refresh(next);
+    }
   }
   window.addEventListener("hashchange", () => route());
   route();

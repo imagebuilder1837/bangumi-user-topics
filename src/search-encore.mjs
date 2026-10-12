@@ -49,6 +49,16 @@ function normalizeReply(row, origin) {
   return {
     key: `reply:${row.source}:${row.id}`,
     kind: "replies",
+    data: {
+      source: row.source,
+      id: row.id,
+      containerID: row.containerID,
+      containerTitle: row.containerTitle ?? null,
+      excerpt: row.excerpt,
+      parentID: row.parentID ?? null,
+      parentName: row.parentName ?? null,
+      createdAt: row.createdAt,
+    },
     title:
       row.containerTitle?.trim() || `${source.container} #${row.containerID}`,
     excerpt: row.excerpt.trim() || "暂无可用摘要",
@@ -106,6 +116,16 @@ export function normalizeBatch(
     return {
       key: `${kind}:${row.id}`,
       kind,
+      data: {
+        id: row.id,
+        kind: row.kind,
+        parentID: row.parentID,
+        title: row.title,
+        replyCount: row.replyCount,
+        createdAt: row.createdAt,
+        updatedAt: 0,
+        parentName: row.parentName ?? null,
+      },
       title: row.title || "无标题",
       parent: row.parentName || (kind === "group" ? "小组话题" : "条目讨论"),
       replies: row.replyCount,
