@@ -2,7 +2,7 @@
 
 本目录是帖子与评论回复的持久行为规格：记录跨模块的约束与不变量，作为理解和修改代码的共同基线。实现细节以代码为准；两者冲突时先核对代码再修订本文。
 
-- 术语表：根目录 [`CONTEXT.md`](../CONTEXT.md)
+- 术语表：根目录 [`GLOSSARY.md`](../GLOSSARY.md)
 - 外部环境事实（Bangumi 宿主页、SearchEncore）：[`external/`](external/)
 - 重大决策记录：[`adr/`](adr/)
 

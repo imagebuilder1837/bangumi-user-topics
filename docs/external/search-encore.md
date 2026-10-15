@@ -2,7 +2,7 @@
 
 > 第三方服务的契约与接入陷阱；以线上行为为准。来源：[文档入口](https://bgmdb.ry.mk/v1/docs)、[OpenAPI](https://bgmdb.ry.mk/v1/openapi.json)。核验日期：2026-09-27、2026-10-02；OpenAPI 3.1.0、info.version=0.1.0，版本号不能判断部署是否更新。
 
-SearchEncore 是 Bangumi 内容的第三方镜像索引，不是官方服务或保证完整的档案。项目的数据源选择见 ADR 0001；回复与主题的集合边界见 `CONTEXT.md`。
+SearchEncore 是 Bangumi 内容的第三方镜像索引，不是官方服务或保证完整的档案。项目的数据源选择见 ADR 0001；回复与主题的集合边界见 `GLOSSARY.md`。
 
 ## 搜索端点
 

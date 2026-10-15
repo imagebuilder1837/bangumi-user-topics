@@ -4,7 +4,7 @@
 
 ## 文档地图
 
-- `CONTEXT.md` — 领域术语表
+- `GLOSSARY.md` — 领域术语表
 - `spec/` — 帖子的持久行为规格（路由/宿主接管、数据流/调度、视图/交互）
 - `external/` — 外部环境事实（Bangumi 宿主页、SearchEncore API），以线上为准
 - `adr/` — 重大决策记录
